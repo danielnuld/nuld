@@ -10,5 +10,5 @@ sfx_*.c
 loader_elf.c
 dist/
 boot_elf.c
-orbit_hash
+nuld_hash
 *.d

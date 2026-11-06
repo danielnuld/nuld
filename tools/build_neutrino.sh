@@ -1,6 +1,6 @@
 #!/bin/bash
-# Build the ORBIT fork of Neutrino (base: rickgaiser/neutrino dev 7be8de2) into dist/neutrino/.
-# usage (from Windows): wsl bash /mnt/c/Users/dgsc/Documents/ps2-launcher/tools/build_neutrino.sh
+# Build the NULD fork of Neutrino (base: rickgaiser/neutrino dev 7be8de2) into dist/neutrino/.
+# usage (from Windows): wsl bash /mnt/d/ps2/ps2-launcher/tools/build_neutrino.sh
 #
 # Rebuilt: the loader (neutrino.elf: -igr / -igroff / -igrexit / -igrmenu / -ra options), modules/ee_core.elf (In
 # Game Reset, in-game menu, achievements telemetry: third_party/neutrino-igr) and modules/raagent.irx (phase 16b).

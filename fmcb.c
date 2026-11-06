@@ -80,14 +80,14 @@ int main(void)
 	              "name_OSDSYS_ITEM_3 = OPL\nname_OSDSYS_ITEM_98 = Configurator\n", v[64];
 	assert(!strcmp(cnf_get(t, "LK_Auto_E1", v, sizeof(v)), "OSDSYS"));
 	assert(!cnf_get(t, "LK_Auto", v, sizeof(v)));                 // a prefix is not the key
-	assert(cnf_set(t, sizeof(t), "LK_Auto_E1", "mc?:/BOOT/ORBIT.ELF"));
-	assert(!strcmp(cnf_get(t, "LK_Auto_E1", v, sizeof(v)), "mc?:/BOOT/ORBIT.ELF"));
+	assert(cnf_set(t, sizeof(t), "LK_Auto_E1", "mc?:/BOOT/NULD.ELF"));
+	assert(!strcmp(cnf_get(t, "LK_Auto_E1", v, sizeof(v)), "mc?:/BOOT/NULD.ELF"));
 	assert(strstr(t, "LK_R1_E1 = mass:/BOOT/BOOT.ELF\n"));        // the rest untouched
-	assert(cnf_set(t, sizeof(t), "LK_L1_E1", "mc?:/BOOT/ORBIT.ELF")); // a new key goes at the end
-	assert(!strcmp(cnf_get(t, "LK_L1_E1", v, sizeof(v)), "mc?:/BOOT/ORBIT.ELF"));
-	assert(cnf_menu_add(t, sizeof(t), "ORBIT", "mc?:/BOOT/ORBIT.ELF") == 2); // the first free number
-	assert(cnf_menu_add(t, sizeof(t), "ORBIT", "mc?:/BOOT/ORBIT.ELF") == 2); // once only
-	assert(!strcmp(cnf_get(t, "name_OSDSYS_ITEM_2", v, sizeof(v)), "ORBIT"));
+	assert(cnf_set(t, sizeof(t), "LK_L1_E1", "mc?:/BOOT/NULD.ELF")); // a new key goes at the end
+	assert(!strcmp(cnf_get(t, "LK_L1_E1", v, sizeof(v)), "mc?:/BOOT/NULD.ELF"));
+	assert(cnf_menu_add(t, sizeof(t), "NULD", "mc?:/BOOT/NULD.ELF") == 2); // the first free number
+	assert(cnf_menu_add(t, sizeof(t), "NULD", "mc?:/BOOT/NULD.ELF") == 2); // once only
+	assert(!strcmp(cnf_get(t, "name_OSDSYS_ITEM_2", v, sizeof(v)), "NULD"));
 	char w[128] = "A = 1\r\nB = 2\r\n";                            // CRLF kept, also for new lines
 	assert(cnf_set(w, sizeof(w), "A", "10") && cnf_set(w, sizeof(w), "C", "3"));
 	assert(!strcmp(w, "A = 10\r\nB = 2\r\nC = 3\r\n"));

@@ -159,17 +159,17 @@ int main(void)
 	ini_set(&d, "SLUS-21376", "video", "nativo");
 	ini_set(&d, "SLUS-21376", "gc", NULL);                             // remove
 	assert(d.n == 3 && !strcmp(ini_get(&d, "SLUS-21376", "gc", "-"), "-"));
-	assert(ini_save(&d, "/tmp/orbit_ini_test.ini", "; test\n") && ini_load(&e, "/tmp/orbit_ini_test.ini"));
+	assert(ini_save(&d, "/tmp/nuld_ini_test.ini", "; test\n") && ini_load(&e, "/tmp/nuld_ini_test.ini"));
 	assert(e.n == 3 && !strcmp(ini_get(&e, "SLUS-21376", "video", ""), "nativo"));
 	// rewrite in another template: values kept, extras appended, the template's comments
 	static ini u, w;
 	static char out[1024];
 	ini_parse(&u, "[ui]\nidioma = en\n[red]\nip = 192.168.100.250\npuerta = 192.168.100.1\n[jellyfin]\nclave = a;b\nnuevo = 1\n");
-	const char *tpl = "; ORBIT - configuration\n\n[ui]\n; language\nidioma = es\n\n[red]\n; ip = dhcp or fixed\nip = dhcp\n"
+	const char *tpl = "; NULD - configuration\n\n[ui]\n; language\nidioma = es\n\n[red]\n; ip = dhcp or fixed\nip = dhcp\n"
 	                  "puerta =\ndns =\n\n[jellyfin]\nclave =\n";
 	int n = ini_render(tpl, &u, out, sizeof(out));
 	assert(n > 0 && strstr(out, "; ip = dhcp or fixed\nip = 192.168.100.250\npuerta = 192.168.100.1\ndns =\n"));
-	assert(strstr(out, "idioma = en\n") && strstr(out, "\n[jellyfin]\nnuevo = 1\n") && !strncmp(out, "; ORBIT - configuration", 23));
+	assert(strstr(out, "idioma = en\n") && strstr(out, "\n[jellyfin]\nnuevo = 1\n") && !strncmp(out, "; NULD - configuration", 22));
 	ini_parse(&w, out);
 	assert(!strcmp(ini_get(&w, "ui", "idioma", ""), "en") && !strcmp(ini_get(&w, "jellyfin", "nuevo", ""), "1"));
 	assert(ini_render(tpl, &u, out, 40) == -1); // too small: refused, never a cut file

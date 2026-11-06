@@ -1,9 +1,9 @@
-// orbit_hash: the launcher's own ISO and memory-card code, run on the game server by tools/orbit_catalog.py
+// nuld_hash: the launcher's own ISO and memory-card code, run on the game server by tools/nuld_catalog.py
 // (phase 17), so a game listed from the catalog has the same serial and RetroAchievements hash as one read by the
 // launcher, and its virtual memory card the same format.
-//   orbit_hash hash <iso>   prints "<serial>\t<hash>" (SLUS_213.76 form; "-" for what cannot be read), exit 1 if none
-//   orbit_hash vmc <file>   writes an empty formatted 8 MB card (the caller checks it does not exist)
-// Built static in WSL (nuld has no compiler): make orbit_hash
+//   nuld_hash hash <iso>   prints "<serial>\t<hash>" (SLUS_213.76 form; "-" for what cannot be read), exit 1 if none
+//   nuld_hash vmc <file>   writes an empty formatted 8 MB card (the caller checks it does not exist)
+// Built static in WSL (nuld has no compiler): make nuld_hash
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
@@ -20,7 +20,7 @@ int main(int argc, char **argv)
 {
 	if (argc == 3 && !strcmp(argv[1], "vmc")) return vmc_create(argv[2]) ? 0 : 1;
 	if (argc != 3 || strcmp(argv[1], "hash")) {
-		fprintf(stderr, "usage: orbit_hash hash <iso> | vmc <file>\n");
+		fprintf(stderr, "usage: nuld_hash hash <iso> | vmc <file>\n");
 		return 2;
 	}
 	FILE *f = fopen(argv[2], "rb");

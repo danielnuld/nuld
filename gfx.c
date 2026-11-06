@@ -19,11 +19,13 @@ static int vram_alloc(int words, int clut)
 	return a;
 }
 
-// ---- text: UTF-8 -> glyph index (ASCII 32-126 = 0..94, font_extras = 95..110), -1 = not in the fonts ----
+// ---- text: UTF-8 -> glyph index (ASCII 32-126 = 0..94, font_extras = 95..), -1 = not in the fonts. A font that
+// did not bake an extra letter (only ui has them all, tools/font.py) gets its ASCII base instead: è -> e, œ -> o ----
 extern const unsigned short font_extras[GFX_EXTRAS];
+extern const unsigned char font_fallback[GFX_EXTRAS];
 static int tracking;
 
-static int next_glyph(const char **ps)
+static int next_glyph(const gfx_font *f, const char **ps)
 {
 	const unsigned char *s = (const unsigned char *)*ps;
 	if (*s < 0x80) { *ps += 1; return *s >= 32 && *s < 127 ? *s - 32 : -1; }
@@ -31,7 +33,7 @@ static int next_glyph(const char **ps)
 		unsigned cp = (s[0] & 0x1F) << 6 | (s[1] & 0x3F);
 		*ps += 2;
 		for (int i = 0; i < GFX_EXTRAS; i++)
-			if (font_extras[i] == cp) return 95 + i;
+			if (font_extras[i] == cp) return f->g[95 + i].adv ? 95 + i : font_fallback[i] - 32;
 		return -1;
 	}
 	for (*ps += 1; (**(const unsigned char **)ps & 0xC0) == 0x80; *ps += 1) {} // skip other sequences
@@ -42,7 +44,7 @@ int gfx_text_width(const gfx_font *f, const char *s)
 {
 	int w = 0;
 	while (*s && *s != '\n') {
-		int g = next_glyph(&s);
+		int g = next_glyph(f, &s);
 		if (g >= 0) w += f->g[g].adv + tracking;
 	}
 	return w > 0 ? w - tracking : 0;
@@ -105,16 +107,21 @@ int main(void)
 
 	const gfx_font *f = &gfx_font_ui;
 	const char *s = "a\xC3\xA9" "b";                    // "aéb"
-	assert(next_glyph(&s) == 'a' - 32 && next_glyph(&s) == 95 + 1 && next_glyph(&s) == 'b' - 32 && !*s);
+	assert(next_glyph(f, &s) == 'a' - 32 && next_glyph(f, &s) == 95 + 1 && next_glyph(f, &s) == 'b' - 32 && !*s);
 	s = "\xE2\x82\xAC!";                                 // 3-byte sequence (euro): skipped as one unknown
-	assert(next_glyph(&s) == -1 && next_glyph(&s) == '!' - 32);
+	assert(next_glyph(f, &s) == -1 && next_glyph(f, &s) == '!' - 32);
 	assert(gfx_text_width(f, "AB") == f->g['A' - 32].adv + f->g['B' - 32].adv);
 	assert(gfx_text_width(f, "AB\nCCCC") == gfx_text_width(f, "AB")); // first line only
 	tracking = 4;
 	assert(gfx_text_width(f, "AB") == f->g['A' - 32].adv + f->g['B' - 32].adv + 4); // between glyphs only
 	tracking = 0;
+	s = "\xC3\xA8\xC5\x93";                              // e-grave, oe: the ui font bakes both
+	int eg = next_glyph(f, &s), oe = next_glyph(f, &s);
+	assert(eg >= 95 && oe >= 95 && f->g[eg].w > 0 && f->g[oe].w > 0 && !*s);
+	s = "\xC3\xA8\xC5\x93";                              // the title font did not: its ASCII base
+	assert(next_glyph(&gfx_font_title, &s) == 'e' - 32 && next_glyph(&gfx_font_title, &s) == 'o' - 32);
 	assert(gfx_text_width(f, "t\xC3\xA9") == f->g['t' - 32].adv + f->g[96].adv && f->g[96].w > 0); // é baked
-	assert(gfx_font_logo.g['O' - 32].w > 0 && gfx_font_logo.g['A' - 32].w == 0); // logo: "ORBIT" only
+	assert(gfx_font_logo.g['N' - 32].w > 0 && gfx_font_logo.g['A' - 32].w == 0); // logo: "NULD" only
 	for (int c = 33; c < 127; c++) assert(gfx_font_title.g[c - 32].w > 0 && gfx_font_mono.g[c - 32].w > 0);
 	static unsigned short img[64 * 64], lin[300 * 140], tl[300 * 140];
 	gfx_fs_dither(img, 64, 64, flat, NULL);                // exact levels: no noise added
@@ -412,6 +419,53 @@ void gfx_ribbon(const float *px, const float *py, int n, float width, unsigned r
 	}
 }
 
+// solid thick polyline (current alpha) under a gfx_ribbon 3 px wider: crisp letters with a 1-2 px soft edge
+void gfx_stroke(const float *px, const float *py, int n, float width, unsigned rgb)
+{
+	if (n < 2 || !room(2 + 2 * n)) return;
+	prim(GS_PRIM_TRIANGLE_STRIP, 0, 0, alpha < 0x80, 0);
+	rgba(rgb);
+	for (int i = 0; i < n; i++) {
+		int i0 = i ? i - 1 : 0, i1 = i < n - 1 ? i + 1 : n - 1;
+		float tx = px[i1] - px[i0], ty = py[i1] - py[i0], l = sqrtf(tx * tx + ty * ty);
+		float nx = l > 0 ? -ty / l * width / 2 : 0, ny = l > 0 ? tx / l * width / 2 : 0;
+		xyz16((int)((px[i] + nx) * 16), (int)((py[i] + ny) * 16));
+		xyz16((int)((px[i] - nx) * 16), (int)((py[i] - ny) * 16));
+	}
+	gfx_ribbon(px, py, n, width + 3, rgb, alpha);
+}
+
+// a vector glyph (tools/logo.py): its triangles filled flat, then its contours again as AA1 line strips, which
+// blend the edges by coverage. v: x y pairs in font units, y up; on screen (ox + x * s, oy - y * s)
+void gfx_vmesh(const short *v, int nv, const unsigned short *tri, int ntri, const unsigned short *ctr, int nctr,
+               float ox, float oy, float s, unsigned rgb)
+{
+	if (!room(2 + 3 * ntri)) return;
+	prim(GS_PRIM_TRIANGLE, 0, 0, alpha < 0x80, 0);
+	rgba(rgb);
+	for (int i = 0; i < 3 * ntri; i++)
+		xyz16((int)((ox + v[2 * tri[i]] * s) * 16), (int)((oy - v[2 * tri[i] + 1] * s) * 16));
+	for (int c = 0; c < nctr; c++) {
+		int a = ctr[c], b = c + 1 < nctr ? ctr[c + 1] : nv;
+		if (!room(3 + b - a)) return;
+		prim(GS_PRIM_LINE_STRIP, 0, 0, 1, 1);
+		rgba(rgb);
+		for (int k = a; k <= b; k++) {
+			int j = k < b ? k : a; // closed: back to the first point
+			xyz16((int)((ox + v[2 * j] * s) * 16), (int)((oy - v[2 * j + 1] * s) * 16));
+		}
+	}
+}
+
+void gfx_scissor(int x0, int y0, int x1, int y1)
+{
+	if (!room(1)) return;
+	x0 = x0 < 0 ? 0 : x0, y0 = y0 < 0 ? 0 : y0; // a box partly off screen: the register takes no negatives
+	x1 = x1 > GFX_W - 1 ? GFX_W - 1 : x1, y1 = y1 > GFX_H - 1 ? GFX_H - 1 : y1;
+	y0 = y0 * out_h / GFX_H, y1 = (y1 + 1) * out_h / GFX_H - 1; // CRT: in output lines, as xyz16
+	PACK_GIFTAG(q, GS_SET_SCISSOR(x0, x1, y0, y1), GS_REG_SCISSOR); q++;
+}
+
 // textured quad, screen rect in 1/16 px, texels (u, v)-(u2, v2) in 1/16, colour top -> bottom (true RGB), blended
 static void tquad16(unsigned long long tex0, int x0, int y0, int x1, int y1, int u, int v, int u2, int v2,
                     unsigned top, unsigned bottom, int linear)
@@ -656,7 +710,7 @@ static void text(const gfx_font *f, int x, int y, const char *s, unsigned rgb, i
 	int split = y + f->asc * 55 / 100, bot = y + f->line_h;
 	for (int x0 = x; *s;) {
 		if (*s == '\n') { x = x0; y += f->line_h; split += f->line_h; bot += f->line_h; s++; continue; }
-		int gi = next_glyph(&s);
+		int gi = next_glyph(f, &s);
 		if (gi < 0) continue;
 		const gfx_glyph *g = &f->g[gi];
 		int gy0 = y + g->yo, gy1 = gy0 + g->h, gx0 = x + g->xo, gx1 = gx0 + g->w;
