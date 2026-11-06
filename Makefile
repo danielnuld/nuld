@@ -2,7 +2,7 @@
 # make APP=modetest -> modetest.elf
 # make APP=launcher -> launcher.elf (NULD: gfx.c, splash.c + generated logo_data.c, font_data.c, ui_data.c)
 # make APP=boot     -> boot.elf (memory-card stub that runs mass0:/launcher.elf; embedded in the launcher)
-# Jellyfin (jfplay.elf) lives in its own repo, danielnuld/orbit-jellyfin, installed as mass0:/APPS/Jellyfin
+# Jellyfin (jfplay.elf) lives in its own repo, danielnuld/nuld-jellyfin, installed as mass0:/APPS/Jellyfin
 APP ?= bench
 SFX = splash move edge confirm panel # sfx/*.wav from tools/sfx.py -> SPU2 ADPCM (ps2sdk adpenc)
 EE_BIN = $(APP).elf
