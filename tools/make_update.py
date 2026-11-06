@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-update assets (#15) for a release: update.txt (signed as update.sig) and ORBIT's own files, each a loose
+"""Self-update assets (#15) for a release: update.txt (signed as update.sig) and NULD's own files, each a loose
 release asset. Usage: python tools/make_update.py v1.1 [OUT_DIR] [--only launcher.elf,...]
 
 update.txt:  version = v1.1
@@ -24,11 +24,11 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--only")]
     only = next((a.split("=", 1)[1].split(",") for a in sys.argv[1:] if a.startswith("--only=")), None)
     ver = args[0]
-    out = args[1] if len(args) > 1 else os.path.join(ROOT, "dist", f"ORBIT-{ver}-update")
+    out = args[1] if len(args) > 1 else os.path.join(ROOT, "dist", f"NULD-{ver}-update")
     src = open(os.path.join(ROOT, "launcher.c"), encoding="utf-8").read()
-    built = re.search(r'#define ORBIT_VERSION "([^"]+)"', src).group(1)
+    built = re.search(r'#define NULD_VERSION "([^"]+)"', src).group(1)
     if built != ver and not only:
-        sys.exit(f"launcher.c ORBIT_VERSION is {built}, not {ver}: bump it and rebuild")
+        sys.exit(f"launcher.c NULD_VERSION is {built}, not {ver}: bump it and rebuild")
     os.makedirs(out, exist_ok=True)
     lines = [f"version = {ver}"]
     for asset, dest, path in FILES:

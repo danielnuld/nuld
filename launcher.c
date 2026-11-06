@@ -1,5 +1,5 @@
-// ORBIT launcher (phase 4): animated splash + home screen of the approved design canvas
-// (https://claude.ai/artifact/94TdvSa23Yh4veqXDpLv7E). Specs: openspec orbit-style, launcher-ui, cover-art.
+// NULD launcher (ORBIT until v1.1): loading screen + home screen in the NULD look (the canvas "NULD — identidad",
+// https://claude.ai/artifact/Nme3Y6XiWdQGTsMA2YbnbS; splash.c is link.elf's). Specs: openspec launcher-ui, cover-art.
 // A loader thread brings up the IOP/USB, reads the memory cards and the games; a cover thread loads the covers on screen
 // (mass0:/covers/<serial>.c16 256x368 + <serial>_s.c16 184x264, tools/covers.py) while the render thread animates;
 // gfx_flip sleeps on a vsync semaphore, so the loader runs in between. Frame time = COP0.Count (ps2tek:1117-1121)
@@ -34,8 +34,9 @@
 #include "sources.h"
 #include "fmcb.h"
 #include "update.h"
+#include "splash.h"
 
-#define ORBIT_VERSION "v1.1" // tools/make_release.py checks it against the release tag
+#define NULD_VERSION "v1.2" // tools/make_release.py checks it against the release tag
 #include "lang.h"
 #include "achievements.h"
 #include "third_party/neutrino-igr/raagent/ra_watch.h"
@@ -44,18 +45,16 @@
 #include <fileXio_rpc.h>
 #include <io_common.h>
 
-// ---- palette (design canvas, Style board) ----
-#define NIGHT 0x04060E
-#define NAVY 0x0D1736
-#define ICE 0x7FE7FF
-#define IRIS 0xC08BFF
-#define TEXT 0xEEF3FF
-#define TEXT2 0xA9B6D3
-#define LABEL 0x8FA0C4
-#define INK 0x0A1026
-#define CHROME_T 0xF4F8FF
-#define CHROME_B 0xAAB7D2
-#define GOLD 0xFFD36B // achievements chip (phase 16)
+// ---- palette (NULD, splash.h): black, steel, mist, signal and one acid accent; no gradients, no glows ----
+#define BG NULD_BG
+#define PANEL 0x0C0E12 // panels, cards
+#define ROW 0x161A21   // the selected row
+#define EDGE 0x2A303A  // 1 px frames
+#define DIM 0x4A515C   // off, unchecked
+#define TEXT NULD_FG
+#define TEXT2 0xA9B0BA
+#define LABEL NULD_MUTED
+#define ACID NULD_ACID
 
 #define LW 256 // selected cover = <serial>.c16
 #define LH 368
@@ -109,12 +108,13 @@ static volatile int state_dirty;
 // the launcher's own device (#8): mass0:, or mmce0: / mmce1: when started from an MMCE (argv[0]); its files live there
 static char homedev[8] = "mass0:";
 static char STATE_INI[32], NEUTRINO[40], CONFIG[32], GAMES_INI[32], RA_DIR[24], NDIR[24], LOG_TXT[24];
+static const char *home_dir = "nuld"; // the settings folder; ORBIT's "orbit" when load_config could not move it
 static void home_paths(void)
 {
-	snprintf(STATE_INI, sizeof(STATE_INI), "%s/orbit/estado.ini", homedev);
-	snprintf(CONFIG, sizeof(CONFIG), "%s/orbit/config.ini", homedev);
-	snprintf(GAMES_INI, sizeof(GAMES_INI), "%s/orbit/juegos.ini", homedev);
-	snprintf(RA_DIR, sizeof(RA_DIR), "%s/orbit/ra", homedev);
+	snprintf(STATE_INI, sizeof(STATE_INI), "%s/%s/estado.ini", homedev, home_dir);
+	snprintf(CONFIG, sizeof(CONFIG), "%s/%s/config.ini", homedev, home_dir);
+	snprintf(GAMES_INI, sizeof(GAMES_INI), "%s/%s/juegos.ini", homedev, home_dir);
+	snprintf(RA_DIR, sizeof(RA_DIR), "%s/%s/ra", homedev, home_dir);
 	snprintf(NDIR, sizeof(NDIR), "%s/neutrino", homedev);
 	snprintf(NEUTRINO, sizeof(NEUTRINO), "%s/neutrino.elf", NDIR);
 	snprintf(LOG_TXT, sizeof(LOG_TXT), "%s/launcher.txt", homedev);
@@ -127,7 +127,7 @@ static void *make_half(const void *big) // 128x184 grid tile from the 256x368 co
 	return h; // NULL: the grid draws the small cover scaled instead
 }
 static volatile int ncv, stage, done_n, total_n, usb, load_ms, neutrino; // written by the loader thread
-#define POPSTARTER "mass0:/POPS/POPSTARTER.ELF" // PS1 games only with ORBIT on the USB (POPStarter reads mass:)
+#define POPSTARTER "mass0:/POPS/POPSTARTER.ELF" // PS1 games only with NULD on the USB (POPStarter reads mass:)
 
 // ---- saves: root dirs of both cards, read once by the loader (design: phase-3-ui). mcn[p] < 0: no card ----
 #define MAXDIR 128
@@ -151,7 +151,7 @@ static void scan_cards(void)
 }
 
 // ---- virtual memory cards (phase 14): the default for PS2 games. Per game (VMC/<serial>.bin) or shared
-// (VMC/ORBIT.bin), on the game's own source, created at the first launch; Neutrino -mc0 serves it as the card in slot
+// (VMC/NULD.bin), on the game's own source, created at the first launch; Neutrino -mc0 serves it as the card in slot
 // 1 (its mc_emu emulates port 0 only). HD Loader cannot hold one (Neutrino README: hdl is read-only, DVD only), and
 // an MMCE switches its own per-game card instead. The saves card reads it: the icon thread lists its root once ----
 enum { MC_DEFAULT, MC_GAME, MC_SHARED, MC_REAL, MC_N };
@@ -162,7 +162,15 @@ static sceMcTblGetDir *vdir[MAXC];  // the card's root; written by the icon thre
 static int vmc_n[MAXC];             // entries in vdir, -1: no card file yet
 static volatile char vmc_state[MAXC]; // 0 not read, 1 reading, 2 done
 
-static void vmc_name(int i, char *out, int n) { snprintf(out, n, "VMC/%s.bin", game_mc(i) == MC_SHARED ? "ORBIT" : cv[i].serial); }
+static int on_catalog(int i);
+static int exists(const char *path);
+static void vmc_name(int i, char *out, int n) // the shared card was VMC/ORBIT.bin until v1.1: used where it is (the
+{                                             // catalog server renames its own, tools/nuld_catalog.py)
+	char old[64];
+	if (game_mc(i) != MC_SHARED) { snprintf(out, n, "VMC/%s.bin", cv[i].serial); return; }
+	snprintf(old, sizeof(old), "%s/VMC/ORBIT.bin", src[(int)cv[i].src].root);
+	snprintf(out, n, "VMC/%s.bin", !on_catalog(i) && exists(old) ? "ORBIT" : "NULD");
+}
 static void vmc_file(int i, char *out, int n) // the launcher's path to it
 {
 	char name[40];
@@ -305,14 +313,14 @@ static icon *load_icon(int i)
 	return ic;
 }
 
-// ---- In Game Reset (phase 12): the ORBIT Neutrino fork reboots through rom0:OSDSYS, and FMCB autoboots
-// mc?:/BOOT/ORBIT.ELF (boot.c, embedded here), which runs mass0:/launcher.elf. The icon thread (the libmc owner)
+// ---- In Game Reset (phase 12): the NULD Neutrino fork reboots through rom0:OSDSYS, and FMCB autoboots
+// mc?:/BOOT/NULD.ELF (boot.c, embedded here), which runs mass0:/launcher.elf. The icon thread (the libmc owner)
 // installs it, rewriting it only when it differs ----
 extern unsigned char boot_elf[];
 extern unsigned int size_boot_elf;
 static unsigned igr_exit, igr_off, igr_menu; // libpad masks from config.ini [igr]; 0 = off
 static volatile int stub_install, stub_new;  // install wanted; just written (toast)
-static volatile int neutrino_igr, neutrino_menu, neutrino_ra, neutrino_lang; // the USB's neutrino.elf is the ORBIT fork (knows -igrexit / -igrmenu / -ra=)
+static volatile int neutrino_igr, neutrino_menu, neutrino_ra, neutrino_lang; // the USB's neutrino.elf is the NULD fork (knows -igrexit / -igrmenu / -ra=)
 
 static int mc_write(int port, const char *path, const void *data, int n) // whole file; 1 if every byte went
 {
@@ -329,17 +337,26 @@ static int mc_write(int port, const char *path, const void *data, int n) // whol
 	return r == n;
 }
 
-static int stub_write(int port) // 1 if mc<port>:/BOOT/ORBIT.ELF is this launcher's stub (already, or written now)
+static int stub_file(int port, const char *path, int create) // 1 if written now, 0 already the stub (or absent), -1 failed
 {
-	int r, n;
-	mcMkDir(port, 0, "/BOOT"), mcSync(0, NULL, &r);
-	u8 *old = mc_read(port, "/BOOT/ORBIT.ELF", &n);
+	int n;
+	u8 *old = mc_read(port, path, &n);
 	int same = old && n == (int)size_boot_elf && !memcmp(old, boot_elf, n);
 	free(old);
-	if (same) return 1;
-	int ok = mc_write(port, "/BOOT/ORBIT.ELF", boot_elf, size_boot_elf);
-	printf("boot stub to mc%d:/BOOT/ORBIT.ELF: %s\n", port, ok ? "ok" : "FAILED");
-	return ok ? stub_new = 1 : 0;
+	if (same || (!old && !create)) return 0;
+	int ok = mc_write(port, path, boot_elf, size_boot_elf);
+	printf("boot stub to mc%d:%s: %s\n", port, path, ok ? "ok" : "FAILED");
+	return ok ? 1 : -1;
+}
+
+static int stub_write(int port) // 1 if mc<port>:/BOOT/NULD.ELF is this launcher's stub (already, or written now)
+{
+	int r;
+	mcMkDir(port, 0, "/BOOT"), mcSync(0, NULL, &r);
+	stub_file(port, "/BOOT/ORBIT.ELF", 0); // ORBIT's (until v1.1): updated only where it is, FMCB may still start it
+	r = stub_file(port, "/BOOT/NULD.ELF", 1);
+	if (r > 0) stub_new = 1;
+	return r >= 0;
 }
 
 static void install_stub(void)
@@ -366,7 +383,7 @@ static void icon_thread(void *arg) // the only libmc user after the boot scan; w
 		if (state_dirty && usb) { // the chosen view, for the next boot (phase 10)
 			state_dirty = 0;
 			FILE *f = fopen(STATE_INI, "w");
-			if (f) fprintf(f, "; ORBIT - estado de la interfaz (lo escribe el launcher)\n[ui]\nvista = %s\n",
+			if (f) fprintf(f, "; NULD - estado de la interfaz (lo escribe el launcher)\n[ui]\nvista = %s\n",
 			               view_key[view]), fclose(f);
 		}
 		int i = icon_want, port;
@@ -549,7 +566,7 @@ static int scan_dir(int s, int k, int n) // ISOs (k 0 DVD, 1 CD) or VCDs (2 POPS
 	return n;
 }
 
-// phase 17: the games of the server's catalog (tools/orbit_catalog.py on [juegos] servidor, HTTP 18290), read with
+// phase 17: the games of the server's catalog (tools/nuld_catalog.py on [juegos] servidor, HTTP 18290), read with
 // the launcher's own network: udpfs is not mounted, so covers and achievements keep working for them
 static int net_ready(void);
 static const char *net_err(int r) // a NET_ERR_* or an HTTP status, in words (#4: the SELECT overlay)
@@ -578,7 +595,7 @@ static int catalog_load(int s, int n)
 	if (!buf || (r = net_ready()) < 0)
 		snprintf(detail, sizeof(detail), L("Sin red (%s): no se leyó el catálogo de juegos del servidor", "No network (%s): the server's game catalog was not read"), net_err(r)), why = detail;
 	else if ((r = http_get(host, 18290, "/catalog", buf, max - 1, &body, &len)) != 200)
-		snprintf(detail, sizeof(detail), L("El catálogo de %s:18290 no respondió (%s): ¿corre orbit_catalog.py? (sin él: servidor vacío)", "The catalog at %s:18290 did not answer (%s): orbit_catalog.py running? (none: empty servidor)"),
+		snprintf(detail, sizeof(detail), L("El catálogo de %s:18290 no respondió (%s): ¿corre nuld_catalog.py? (sin él: servidor vacío)", "The catalog at %s:18290 did not answer (%s): nuld_catalog.py running? (none: empty servidor)"),
 		         host, net_err(r)), why = detail;
 	else {
 		char *p = buf + body;
@@ -728,19 +745,19 @@ static void disc_thread(void *arg)
 	}
 }
 
-// ---- config (phase 7): mass0:/orbit/config.ini, created from this template when missing; per-game options in
+// ---- config (phase 7): mass0:/nuld/config.ini, created from this template when missing; per-game options in
 // juegos.ini, one section per dash serial with only the keys that differ from the defaults ----
 static const char *const config_template[2] = {
-	"; ORBIT - configuración, se lee al arrancar\n" // the first line names the language (phase 18)
+	"; NULD - configuración, se lee al arrancar\n" // the first line names the language (phase 18)
 	"\n[ui]\n; idioma de la interfaz y de estos comentarios: es = español, en = inglés (english)\nidioma = es\n"
 	"\n[juegos]\n; dónde buscar juegos de PS2 (carpetas DVD y CD), separados por comas: usb, hdd, mx4sio, ilink, mmce,\n"
 	"; udpbd, udpfs. hdd = disco interno exFAT, o APA con particiones de HD Loader. udpbd usa la IP fija de [red];\n"
 	"; udpfs, el servidor de abajo. mx4sio y mmce no van juntos. Configuración, portadas, Neutrino, POPS\n"
 	"; y APPS siguen en la USB.\norigen = usb\n"
-	"; udpfs: IP del servidor de juegos con orbit_catalog (da la lista; portadas y logros siguen). Vacío = cualquier\n"
+	"; udpfs: IP del servidor de juegos con nuld_catalog (da la lista; portadas y logros siguen). Vacío = cualquier\n"
 	"; servidor udpfs de la red (Server2PS2...), con la IP fija de [red], sin portadas ni logros por red\nservidor =\n"
 	"\n[memorycard]\n; memory card de los juegos de PS2: juego = una virtual por juego (VMC/<serie>.bin en el mismo\n"
-	"; dispositivo, se crea al jugar), compartida = una virtual para todos (VMC/ORBIT.bin), fisica = la de la ranura 1.\n"
+	"; dispositivo, se crea al jugar), compartida = una virtual para todos (VMC/NULD.bin), fisica = la de la ranura 1.\n"
 	"; Cada juego lo cambia con triángulo. HD Loader solo admite la física; un MMCE cambia solo a la del juego.\n"
 	"modo = juego\n"
 	"\n[video]\n; modo de video de los juegos: nativo, 480p o 1080i (cada juego lo cambia con triángulo)\nmodo = 480p\n"
@@ -751,7 +768,7 @@ static const char *const config_template[2] = {
 	"puerta =\ndns =\n"
 	"\n[portadas]\n; si = descargar de internet (github xlenore/ps2-covers) las que falten, con el cable de red conectado\n"
 	"descargar = si\n"
-	"\n[actualizaciones]\n; si = al arrancar, con el cable de red, mirar si hay una versión nueva de ORBIT (se instala con START)\n"
+	"\n[actualizaciones]\n; si = al arrancar, con el cable de red, mirar si hay una versión nueva de NULD (se instala con START)\n"
 	"buscar = si\n"
 	"\n[logros]\n; RetroAchievements: si = preguntar al cliente xeRAbora de la casa si el juego tiene logros (con el cable\n"
 	"; de red conectado), no = nada de logros\nactivos = si\n"
@@ -760,22 +777,22 @@ static const char *const config_template[2] = {
 	"; vacío = sin Jellyfin\nservidor =\nusuario =\nclave =\n"
 	"; subtítulos (texto, no quemados): idiomas en orden de preferencia (spa, eng, por...), no = sin subtítulos;\n"
 	"; durante el video, cuadrado cambia de pista\nsubtitulos = spa\n"
-	"\n[igr]\n; desde un juego (Neutrino de ORBIT): menu abre el menu sobre el juego en pausa; reiniciar y apagar\n"
-	"; actuan directo. Reiniciar arranca la consola como al encenderla: FMCB vuelve a lanzar ORBIT si su\n"
-	"; autoarranque apunta a mc?:/BOOT/ORBIT.ELF (lo instala el launcher).\n"
+	"\n[igr]\n; desde un juego (Neutrino de NULD): menu abre el menu sobre el juego en pausa; reiniciar y apagar\n"
+	"; actuan directo. Reiniciar arranca la consola como al encenderla: FMCB vuelve a lanzar NULD si su\n"
+	"; autoarranque apunta a mc?:/BOOT/NULD.ELF (lo instala el launcher).\n"
 	"; botones: L1 L2 R1 R2 L3 R3 START SELECT ARRIBA ABAJO IZQUIERDA DERECHA TRIANGULO CIRCULO X CUADRADO,\n"
 	"; unidos con +; vacio = desactivado\n"
 	"menu = L1+L2+R1+R2+START+SELECT\nreiniciar =\napagar = L1+L2+R1+R2+L3+R3\n",
-	"; ORBIT - configuration, read at boot\n"
+	"; NULD - configuration, read at boot\n"
 	"\n[ui]\n; language of the interface and of these comments: es = Spanish (español), en = English\nidioma = en\n"
 	"\n[juegos]\n; where to look for PS2 games (DVD and CD folders), comma-separated: usb, hdd, mx4sio, ilink, mmce,\n"
 	"; udpbd, udpfs. hdd = internal exFAT disk, or APA with HD Loader partitions. udpbd uses the fixed IP of [red];\n"
 	"; udpfs, the server below. mx4sio and mmce do not go together. Settings, covers, Neutrino, POPS\n"
 	"; and APPS stay on the USB.\norigen = usb\n"
-	"; udpfs: IP of the game server running orbit_catalog (lists the games; covers and achievements keep working).\n"
+	"; udpfs: IP of the game server running nuld_catalog (lists the games; covers and achievements keep working).\n"
 	"; Empty = any udpfs server on the network (Server2PS2...), with the fixed IP of [red], no online covers/achievements\nservidor =\n"
 	"\n[memorycard]\n; memory card for PS2 games: juego = a virtual card per game (VMC/<serial>.bin on the same\n"
-	"; device, created on first play), compartida = one virtual card for all (VMC/ORBIT.bin), fisica = the one in slot 1.\n"
+	"; device, created on first play), compartida = one virtual card for all (VMC/NULD.bin), fisica = the one in slot 1.\n"
 	"; Each game can change it with triangle. HD Loader only allows the physical one; an MMCE switches to the game's.\n"
 	"modo = juego\n"
 	"\n[video]\n; video mode of the games: nativo, 480p or 1080i (each game can change it with triangle)\nmodo = 480p\n"
@@ -786,7 +803,7 @@ static const char *const config_template[2] = {
 	"puerta =\ndns =\n"
 	"\n[portadas]\n; si = download the missing covers from the internet (github xlenore/ps2-covers), with the cable in\n"
 	"descargar = si\n"
-	"\n[actualizaciones]\n; si = at boot, with the network cable in, check for a new ORBIT version (installed with START)\n"
+	"\n[actualizaciones]\n; si = at boot, with the network cable in, check for a new NULD version (installed with START)\n"
 	"buscar = si\n"
 	"\n[logros]\n; RetroAchievements: si = ask the home xeRAbora client whether the game has achievements (with the\n"
 	"; network cable in), no = no achievements at all\nactivos = si\n"
@@ -795,9 +812,9 @@ static const char *const config_template[2] = {
 	"; empty = no Jellyfin\nservidor =\nusuario =\nclave =\n"
 	"; subtitles (text, not burned in): languages in order of preference (spa, eng, por...), no = no subtitles;\n"
 	"; during the video, square changes the track\nsubtitulos = spa\n"
-	"\n[igr]\n; from a game (ORBIT's Neutrino): menu opens the menu over the paused game; reiniciar (restart) and\n"
-	"; apagar (power off) act at once. Restart boots the console as when powered on: FMCB starts ORBIT again if\n"
-	"; its autoboot points to mc?:/BOOT/ORBIT.ELF (the launcher installs it).\n"
+	"\n[igr]\n; from a game (NULD's Neutrino): menu opens the menu over the paused game; reiniciar (restart) and\n"
+	"; apagar (power off) act at once. Restart boots the console as when powered on: FMCB starts NULD again if\n"
+	"; its autoboot points to mc?:/BOOT/NULD.ELF (the launcher installs it).\n"
 	"; buttons: L1 L2 R1 R2 L3 R3 START SELECT ARRIBA ABAJO IZQUIERDA DERECHA TRIANGULO CIRCULO X CUADRADO\n"
 	"; (up down left right triangle circle x square), joined with +; empty = off\n"
 	"menu = L1+L2+R1+R2+START+SELECT\nreiniciar =\napagar = L1+L2+R1+R2+L3+R3\n"};
@@ -811,9 +828,14 @@ static int crt;             // [video] pantalla = 480i: menu in 480i / 576i, gam
 
 static void load_config(void) // loader thread, before the splash sound
 {
-	char dir[24];
-	snprintf(dir, sizeof(dir), "%s/orbit", homedev);
-	mkdir(dir, 0777);
+	char dir[24], old[24];
+	snprintf(dir, sizeof(dir), "%s/nuld", homedev), snprintf(old, sizeof(old), "%s/orbit", homedev);
+	DIR *d = opendir(dir), *o = d ? NULL : opendir(old);
+	if (d) closedir(d);
+	if (o) { // v1.2: ORBIT's folder becomes NULD's; if the driver cannot move it, it is used where it is
+		closedir(o);
+		if (rename(old, dir)) home_dir = "orbit", home_paths();
+	} else if (!d) mkdir(dir, 0777);
 	if (!ini_load(&cfg, CONFIG)) { // Spanish, the default, until the user picks another idioma
 		w_first = 1;               // the setup wizard opens on the home screen (#15)
 		FILE *f = fopen(CONFIG, "wb");
@@ -821,13 +843,14 @@ static void load_config(void) // loader thread, before the splash sound
 		ini_parse(&cfg, config_template[0]);
 	}
 	lang_en = !strcasecmp(ini_get(&cfg, "ui", "idioma", "es"), "en"); // phase 18: first, the rest may show text
-	// phase 18: the comments follow idioma. A file ORBIT wrote (its first line names the language) in the other
-	// language is written again from that language's template with every value kept (ini_render); a file the user
-	// wrote from scratch is left alone
+	// phase 18: the comments follow idioma. A file NULD (or ORBIT, until v1.1) wrote (its first line names the
+	// language) in the other language is written again from that language's template with every value kept
+	// (ini_render); a file the user wrote from scratch is left alone
 	char first[48] = "";
 	FILE *cf = fopen(CONFIG, "rb");
 	if (cf) fgets(first, sizeof(first), cf), fclose(cf);
-	int file_en = !strncmp(first, "; ORBIT - configuration", 23), file_es = !strncmp(first, "; ORBIT - configuraci", 21);
+	const char *body = first + (!strncmp(first, "; NULD - ", 9) ? 9 : !strncmp(first, "; ORBIT - ", 10) ? 10 : 0);
+	int file_en = body > first && !strncmp(body, "configuration", 13), file_es = body > first && !strncmp(body, "configuraci", 11);
 	if ((file_en && !lang_en) || (file_es && lang_en)) {
 		static char out[16384];
 		int n = ini_render(config_template[lang_en], &cfg, out, sizeof(out));
@@ -1046,13 +1069,13 @@ static void download_covers(void)
 	int ms = (int)((clock() - c0) * 1000 / CLOCKS_PER_SEC);
 	printf("covers: %d of %d downloaded in %d ms, state %d\n", dl_got, dl_total, ms, dl_state);
 	FILE *fp = fopen(LOG_TXT, "a"); // gate: time per pair
-	if (fp) fprintf(fp, "orbit covers: %d of %d downloaded in %d ms (%d ms per pair), state %d %s (me %s)\n", dl_got, dl_total,
+	if (fp) fprintf(fp, "nuld covers: %d of %d downloaded in %d ms (%d ms per pair), state %d %s (me %s)\n", dl_got, dl_total,
 	                ms, dl_got ? ms / dl_got : 0, dl_state, net_why, net_ip()), fclose(fp);
 	if (dl_state == 2) dl_state = 3;
 }
 
 // ---- achievements (phase 16, step 1): the selected PS2 game's RetroAchievements hash, cached in
-// mass0:/orbit/ra/<serial>.txt with the ISO size, then the client on the home server asked about it; the loader
+// mass0:/nuld/ra/<serial>.txt with the ISO size, then the client on the home server asked about it; the loader
 // thread does it after the covers, one game at a time, the latest selection first ----
 static volatile int ra_want = -1, ra_sema = -1, ra_down, ra_busy, ra_launching; // ra_down: 1 no network, 2 no client (toast once)
 static volatile char ra_state[MAXC];                      // 0 not asked, 1 working, then RA_SET.. (achievements.h)
@@ -1075,7 +1098,7 @@ static void ra_log(const char *fmt, ...) // the console has no printf: launcher.
 	va_end(ap);
 	printf("%s\n", line);
 	FILE *fp = fopen(LOG_TXT, "a");
-	if (fp) fprintf(fp, "orbit %s\n", line), fclose(fp);
+	if (fp) fprintf(fp, "nuld %s\n", line), fclose(fp);
 }
 
 // the serial as SYSTEM.CNF and Neutrino's GameID have it ("SLUS_213.76"): the client pairs the snapshots' serial
@@ -1137,7 +1160,7 @@ static void ra_load_list(int i) // worker: game id from RetroAchievements (HTTPS
 }
 
 // phase 16b, at launch (render thread, worker stopped, network still up): the game's watch list to
-// mass0:/orbit/ra/<serial>.wl and Neutrino's extra config mass0:/neutrino/config/ra.toml, which loads smap,
+// mass0:/nuld/ra/<serial>.wl and Neutrino's extra config mass0:/neutrino/config/ra.toml, which loads smap,
 // ministack (no DHCP: the IP the launcher has now) and the agent into the game; arg gets "-ra=<list>". 0: none
 static int ra_prepare(int i, char *arg, int n)
 {
@@ -1150,8 +1173,8 @@ static int ra_prepare(int i, char *arg, int n)
 	if (f) ok &= fclose(f) == 0;
 	snprintf(path, sizeof(path), "%s/config/ra.toml", NDIR);
 	if (ok && (f = fopen(path, "w"))) {
-		ok = fputs("# written by ORBIT at each launch (phase 16b): RetroAchievements agent in the game\n"
-		           "name = \"ORBIT RetroAchievements\"\n", f) >= 0;
+		ok = fputs("# written by NULD at each launch (phase 16b): RetroAchievements agent in the game\n"
+		           "name = \"NULD RetroAchievements\"\n", f) >= 0;
 		if (src[(int)cv[i].src].type != SRC_UDPFS) // a nuld game's bsd-udpfs config already loads these (phase 17)
 			ok &= fprintf(f, "depends = [\"i_dev9_hidden\"]\n[[module]]\nfile = \"smap.irx\"\nenv = [\"EE\"]\n"
 			                 "[[module]]\nfile = \"ministack.irx\"\nargs = [\"ip=%s\"]\nenv = [\"EE\"]\n", ra_me) > 0;
@@ -1167,9 +1190,9 @@ static int ra_prepare(int i, char *arg, int n)
 	return ok;
 }
 
-// ---- self-update (#15): the latest release's signed update.txt (update.c) names ORBIT's own files; a newer version
+// ---- self-update (#15): the latest release's signed update.txt (update.c) names NULD's own files; a newer version
 // shows a toast and the wizard's first row, which downloads, checks and swaps them (the old ones stay as .old) ----
-#define UPD_URL "https://github.com/danielnuld/ps2-launcher/releases/latest/download/"
+#define UPD_URL "https://github.com/danielnuld/nuld/releases/latest/download/"
 static upd_manifest upd;
 static volatile int upd_avail; // 1 a newer signed release (toast pending), 2 told
 static char upd_base[160];
@@ -1187,11 +1210,11 @@ static void update_check(void) // loader thread; the network is up for the cover
 		snprintf(url, sizeof(url), "%supdate.sig", upd_base);
 		ss = net_fetch(url, g, max, &sbody, &slen);
 		sig = ss == 200 && upd_verify(t + body, len, (unsigned char *)g + sbody, slen);
-		if (sig && upd_parse(t + body, &upd) && upd_newer(upd.version, ORBIT_VERSION)) upd_avail = 1;
+		if (sig && upd_parse(t + body, &upd) && upd_newer(upd.version, NULD_VERSION)) upd_avail = 1;
 	}
 	FILE *lf = fopen(LOG_TXT, "a");
-	if (lf) fprintf(lf, "orbit update: %s %d, sig %d %s, latest %s, this %s%s\n", upd_base, st, ss, sig ? "ok" : "BAD",
-	                sig ? upd.version : "?", ORBIT_VERSION, upd_avail ? ": NEWER" : ""), fclose(lf);
+	if (lf) fprintf(lf, "nuld update: %s %d, sig %d %s, latest %s, this %s%s\n", upd_base, st, ss, sig ? "ok" : "BAD",
+	                sig ? upd.version : "?", NULD_VERSION, upd_avail ? ": NEWER" : ""), fclose(lf);
 	free(t), free(g);
 }
 
@@ -1220,7 +1243,7 @@ static void loader(void *arg) // lower priority than the render thread: runs whi
 	if (usb) {
 		FILE *f = fopen(NEUTRINO, "rb");
 		neutrino = f != NULL;
-		if (f) { // the ORBIT fork's usage text names -igrexit; the official build would reject the option
+		if (f) { // the NULD fork's usage text names -igrexit; the official build would reject the option
 			fseek(f, 0, SEEK_END);
 			long n = ftell(f);
 			char *b = n > 0 && n < (4 << 20) ? malloc(n) : NULL;
@@ -1242,9 +1265,9 @@ static void loader(void *arg) // lower priority than the render thread: runs whi
 		load_games();
 	}
 	load_ms = (int)((clock() - c0) * 1000 / CLOCKS_PER_SEC);
-	printf("%d games loaded in %d ms, neutrino %d (orbit igr %d)\n", ncv, load_ms, neutrino, neutrino_igr);
+	printf("%d games loaded in %d ms, neutrino %d (nuld igr %d)\n", ncv, load_ms, neutrino, neutrino_igr);
 	FILE *lf = usb ? fopen(LOG_TXT, "a") : NULL; // the toast is gone after a few seconds
-	if (lf) fprintf(lf, "orbit games: %d in %d ms, sources %d%s%s (me %s, net %d %s)\n", ncv, load_ms, nsrc,
+	if (lf) fprintf(lf, "nuld games: %d in %d ms, sources %d%s%s (me %s, net %d %s)\n", ncv, load_ms, nsrc,
 	                src_why ? ": " : "", src_why ? src_why : "", net_ip(), net_res, net_why), fclose(lf);
 	stage = 3;
 	cover_lock = CreateSema(&(ee_sema_t){ .init_count = 1, .max_count = 1 });
@@ -1272,233 +1295,69 @@ static void loader(void *arg) // lower priority than the render thread: runs whi
 	ExitThread();
 }
 
-// ---- shared scenery ----
-static void floor_grid(int horizon, int a) // perspective grid (design: rotateX floor), alpha a at the near edge
-{
-	for (int k = 0; k < 12; k++) {   // horizontals, closer together towards the horizon
-		float y = horizon + (GFX_H + 40 - horizon) / (1 + 0.55f * k);
-		int al = (int)(a * (y - horizon) / (GFX_H - horizon));
-		if (y < GFX_H) gfx_line(0, y, GFX_W, y, ICE, al, al);
-	}
-	for (int i = -14; i <= 14; i++)  // verticals towards one vanishing point
-		gfx_line(GFX_W / 2 + i * 150.f, GFX_H, GFX_W / 2 + i * 150.f * 0.28f, horizon, ICE, a, 0);
-}
-
-// ---- home ambience (phase 10, user 2026-10-01: "algo animado"): everything slow and dim, behind the covers ----
-static float hash01(int i) { unsigned h = (unsigned)i * 2654435761u; h ^= h >> 15; return (h & 0xFFFF) / 65535.f; }
-
-static void ambient(int fr, float par) // fr: frames since the home screen; par: eased selection (floor parallax)
-{
-	float t = fr / 60.f;
-	gfx_dither(1);
-	gfx_alpha(0x2A); // aurora: two soft glows on slow Lissajous paths
-	gfx_glow((int)(160 + 240 * sinf(t * 0.11f)), (int)(60 + 60 * sinf(t * 0.07f + 1)), 800, 440, IRIS, 0x3040A0);
-	gfx_alpha(0x22);
-	gfx_glow((int)(460 + 260 * sinf(t * 0.09f + 2)), (int)(90 + 70 * cosf(t * 0.08f)), 740, 400, ICE, 0x2050A0);
-
-	const int hz = 418;          // floor: horizontals flow towards the viewer, one line every ~2.9 s;
-	float ph = fmodf(t * 0.35f, 1); // verticals slide against the selection (parallax)
-	for (int k = -1; k < 13; k++) {
-		float kk = k + 1 - ph, y = hz + (GFX_H + 40 - hz) / (1 + 0.55f * (kk > 0 ? kk : 0));
-		int al = (int)(0x1C * (y - hz) / (GFX_H - hz) * clampf(12 - kk));
-		if (y < GFX_H && al > 0) gfx_line(0, y, GFX_W, y, ICE, al, al);
-	}
-	float off = fmodf(par * 46, 150);
-	for (int i = -15; i <= 15; i++)
-		gfx_line(GFX_W / 2 + i * 150.f - off, GFX_H, GFX_W / 2 + (i * 150.f - off) * 0.28f, hz, ICE, 0x1C, 0);
-	gfx_line(0, hz, 640, hz, ICE, 0, 0x46);
-	gfx_line(640, hz, GFX_W, hz, IRIS, 0x46, 0);
-	float sw = fmodf(t, 7) / 2.4f; // light sweep along the horizon every 7 s
-	if (sw < 1) {
-		float x = -240 + (GFX_W + 480) * ease(sw), a = sinf(sw * 3.14159f);
-		gfx_line(x - 220, hz, x, hz, 0xFFFFFF, 0, (int)(0x90 * a));
-		gfx_alpha((int)(0x50 * a));
-		gfx_glow((int)x - 50, hz - 22, 100, 44, 0xFFFFFF, ICE);
-	}
-	gfx_alpha((int)(0x20 + 0x08 * sinf(t * 0.8f))); // the floor glow breathes
-	gfx_glow(340, 470, 600, 120, ICE, ICE);
-
-	for (int i = 0; i < 28; i++) { // motes: small sparkles rising, swaying and twinkling
-		float sp = 10 + 14 * hash01(i * 3 + 1), y = GFX_H + 20 - fmodf(t * sp + 640 * hash01(i * 3 + 2), 600);
-		float x = GFX_W * hash01(i * 3) + 16 * sinf(t * 0.5f + i), tw = 0.5f + 0.5f * sinf(t * (1.3f + hash01(i)) + i * 2);
-		int sz = 6 + (int)(8 * hash01(i * 7)), a = (int)(0x68 * tw * clampf((y - 140) / 120) * clampf((GFX_H - y) / 80));
-		if (a <= 0) continue;
-		gfx_alpha(a);
-		unsigned c = i % 3 == 0 ? IRIS : i % 3 == 1 ? ICE : 0xDDEBFF;
-		gfx_icon_scaled(UI_SPARKLE_12, (int)x, (int)y, sz, sz, c, c);
-	}
-	static const short st[3][3] = {{1116, 146, 0}, {150, 196, 1}, {1194, 378, 2}}; // the design's three, twinkling
-	for (int i = 0; i < 3; i++) {
-		gfx_alpha((int)(0x80 * (0.65f + 0.35f * sinf(t * 1.1f + st[i][2] * 2.1f))));
-		gfx_icon(i ? UI_SPARKLE_12 : UI_SPARKLE_24, st[i][0], st[i][1], i == 0 ? 0xDDEBFF : i == 1 ? 0xB7C3FF : ICE);
-	}
-	gfx_dither(0);
-}
-
 static void text_c(const gfx_font *f, int y, const char *s, unsigned rgb) // centred on the screen
 {
 	gfx_text(f, (GFX_W - gfx_text_width(f, s)) / 2, y, s, rgb);
 }
 
-// ---- splash (design: Loading + SplashStory boards), frame-based at 60 Hz ----
+// ---- splash: the NULD loading screen (splash.c) with the loader's progress under the status line, at 60 Hz ----
 static float shown; // displayed progress, eased towards the real one
-
-static void orbit(float ring, int front) // ellipse rx 210 ry 44 rotated -12 degrees, 3 px soft ribbon, drawn from
-{                                         // the left; lower half (front) over the orb
-	if (ring <= 0) return;
-	float c = cosf(-12 * 3.14159f / 180), s = sinf(-12 * 3.14159f / 180), px[49], py[49];
-	int segs = (int)(96 * ring), first = front ? 48 : 0, last = (front ? 96 : 48) < segs ? (front ? 96 : 48) : segs, n = 0;
-	for (int i = first; i <= last; i++) {
-		float a = i * 6.28318f / 96 + 3.14159f, x = 210 * cosf(a), y = 44 * sinf(a);
-		px[n] = 640 + x * c - y * s, py[n] = 240 + x * s + y * c, n++;
-	}
-	gfx_ribbon(px, py, n, 3.5f, ICE, 0x80);
-}
-
-// ---- backgrounds, Floyd-Steinberg dithered on the EE while the screen is still black (docs/image-quality.md) ----
-static unsigned short *splash_bg, *home_bg; // 1280x720 in 256x128 tiles; 64x720 strip
-
-static unsigned chan(unsigned c, int s) { return c >> s & 255; }
-static void home_col(int x, int y, float *rgb, void *u) // canvas: navy 0% -> #080D22 48% -> night 100%
-{
-	(void)x, (void)u;
-	unsigned a = y < 346 ? NAVY : 0x080D22, b = y < 346 ? 0x080D22 : NIGHT;
-	float t = y < 346 ? y / 346.f : (y - 346) / (float)(GFX_H - 346);
-	for (int c = 0; c < 3; c++) rgb[c] = chan(a, 16 - 8 * c) + (chan(b, 16 - 8 * c) - (float)chan(a, 16 - 8 * c)) * t;
-}
-static void splash_col(int x, int y, float *rgb, void *u) // radial #0B1A3E glow centred at 50% 44% over black
-{
-	(void)u;
-	float dx = (x - 640) / 640.f, dy = (y - 320) / 360.f, g = 1 - sqrtf(dx * dx + dy * dy);
-	g = g > 0 ? g * g : 0;
-	rgb[0] = 0x0B * g, rgb[1] = 0x1A * g, rgb[2] = 0x3E * g;
-}
-
-static void make_backgrounds(void)
-{
-	u32 c0 = cycles();
-	home_bg = memalign(64, 64 * GFX_H * 2);
-	splash_bg = memalign(64, GFX_W * GFX_H * 2);
-	unsigned short *lin = malloc(GFX_W * GFX_H * 2);
-	if (home_bg) gfx_fs_dither(home_bg, 64, GFX_H, home_col, NULL), SyncDCache(home_bg, home_bg + 64 * GFX_H);
-	if (splash_bg && lin) {
-		gfx_fs_dither(lin, GFX_W, GFX_H, splash_col, NULL);
-		gfx_tiles_from(splash_bg, lin, GFX_W, GFX_H);
-		SyncDCache(splash_bg, splash_bg + GFX_W * GFX_H);
-	}
-	free(lin);
-	printf("backgrounds dithered in %u ms\n", to_us(cycles() - c0) / 1000);
-}
 
 static void splash(int t, float fade)
 {
+	char st[64];
+	float goal = stage < 2 ? 0.05f * stage : stage == 3 ? 1 : 0.1f + 0.9f * (total_n ? (float)done_n / total_n : 0);
+	shown += (goal - shown) * 0.08f;
+	if (stage == 0) snprintf(st, sizeof(st), L("Iniciando USB", "Starting USB"));
+	else if (stage == 1) snprintf(st, sizeof(st), L("Leyendo memory cards", "Reading memory cards"));
+	else snprintf(st, sizeof(st), L("Cargando portadas  %02d / %02d", "Loading covers  %02d / %02d"), done_n, total_n);
+	splash_msg(st);
 	gfx_begin();
+	splash_draw(t / 60.f);
 	gfx_alpha(0x80);
-	gfx_image_tiled(splash_bg, GFX_W, GFX_H, 0, 0); // radial navy glow, Floyd-Steinberg dithered at boot
-	gfx_dither(1); // remaining soft glows: GS dither; text and the baked orb are not
-	floor_grid(500, 0x16);
-
-	// light towers rise, then fade (design: 0.5-1.6 s)
-	static const short towers[6][3] = {{300, 200, 10}, {420, 250, 14}, {846, 230, 12}, {968, 180, 9}, {540, 170, 8}, {730, 160, 8}};
-	for (int i = 0; i < 6; i++) {
-		float k = ease(span(t, 30 + i * 4, 80 + i * 4)), out = 1 - span(t, 90, 130);
-		int h = (int)(towers[i][1] * k);
-		if (h > 0 && out > 0) {
-			gfx_alpha((int)(0x70 * out));
-			gfx_grad(towers[i][0], 530 - h, towers[i][2], h, 0xFFFFFF, 0x0A1A40, 1);
-		}
-	}
-
-	float sp = span(t, 0, 30), spo = 1 - span(t, 30, 66); // spark: grows, then dissolves into the ring
-	if (spo > 0) {
-		int s = (int)(80 * (0.2f + 1.6f * ease(sp)));
-		gfx_alpha((int)(0x80 * ease(sp) * spo));
-		gfx_glow(640 - s / 2, 240 - s / 2, s, s, 0xFFFFFF, 0xA0C8FF);
-	}
-
-	float ring = ease(span(t, 30, 96)); // orbit draws itself; back half behind the orb, front half over it
-	orbit(ring, 0);
-	float ob = ease(span(t, 96, 144)); // orb appears, a highlight sweeps across it
-	if (ob > 0) {
-		int s = (int)(110 * (0.6f + 0.4f * ob));
-		gfx_alpha((int)(0x38 * ob));
-		gfx_glow(640 - s * 2, 240 - s * 2, s * 4, s * 4, ICE, 0x7896FF);
-		gfx_alpha((int)(0x80 * ob));
-		gfx_dither(0);
-		gfx_orb(640 - s / 2, 240 - s / 2, s);
-		gfx_dither(1);
-		float sh = span(t, 136, 196);
-		if (sh > 0 && sh < 1) {
-			gfx_alpha((int)(0x70 * sinf(sh * 3.14159f)));
-			gfx_glow(640 - 55 + (int)(110 * sh) - 22, 240 - 40, 44, 44, 0xFFFFFF, 0xFFFFFF);
-		}
-	}
-
-	orbit(ring, 1);
-	gfx_dither(0);
-
-	float wd = ease(span(t, 144, 192)); // "ORBIT": tracking closes 34 -> 10 px
-	if (wd > 0) {
-		gfx_tracking((int)(34 - 24 * wd));
-		gfx_alpha((int)(0x80 * wd));
-		gfx_text_chrome(&gfx_font_logo, (GFX_W - gfx_text_width(&gfx_font_logo, "ORBIT")) / 2, 330, "ORBIT");
-		gfx_tracking(6);
-		gfx_alpha((int)(0x80 * span(t, 180, 228)));
-		text_c(&gfx_font_mono, 412, "PS2 LAUNCHER", LABEL);
-		gfx_tracking(0);
-	}
-
-	float ba = span(t, 192, 228); // loading bar, real progress
-	if (ba > 0) {
-		float goal = stage < 2 ? 0.05f * stage : stage == 3 ? 1 : 0.1f + 0.9f * (total_n ? (float)done_n / total_n : 0);
-		shown += (goal - shown) * 0.08f;
-		int w = (int)(300 * shown);
-		gfx_alpha((int)(0x2E * ba));
-		gfx_rect(490, 520, 300, 2, TEXT2);
-		gfx_alpha((int)(0x80 * ba));
-		gfx_grad(490, 520, w, 2, 0x4C7BD9, 0xDDEBFF, 0);
-		gfx_alpha((int)(0x60 * ba));
-		gfx_glow(490 + w - 14, 507, 28, 28, 0xBFD8FF, 0xBFD8FF);
-		char st[64];
-		if (stage == 0) snprintf(st, sizeof(st), L("INICIANDO USB", "STARTING USB"));
-		else if (stage == 1) snprintf(st, sizeof(st), L("LEYENDO MEMORY CARDS", "READING MEMORY CARDS"));
-		else snprintf(st, sizeof(st), L("CARGANDO PORTADAS  %02d / %02d", "LOADING COVERS  %02d / %02d"), done_n, total_n);
-		gfx_tracking(3);
-		gfx_alpha((int)(0x80 * ba));
-		text_c(&gfx_font_mono, 536, st, 0x6F7E9E);
-		gfx_tracking(0);
-	}
+	gfx_rect(490, 524, 300, 2, EDGE);
+	gfx_rect(490, 524, (int)(300 * shown), 2, ACID);
 	if (fade > 0) { gfx_alpha((int)(0x80 * fade)); gfx_rect(0, 0, GFX_W, GFX_H, 0); }
 	gfx_end();
 	gfx_flip();
 }
 
-// ---- home screen (design: Inicio board) ----
-static int hint(int x, int key_icon, const char *key_text, int action_icon, const char *label) // right-aligned at x
+// ---- home screen (NULD board "Inicio"): black, a faint floor, 1 px frames, acid HUD corners, scanlines ----
+static void frame1(int x, int y, int w, int h, unsigned rgb) // 1 px outline
 {
-	int lw = gfx_text_width(&gfx_font_ui, label);
-	int kw = key_icon >= 0 ? 30 : gfx_text_width(&gfx_font_mono, key_text) + 20;
-	int w = 8 + kw + 10 + 18 + 10 + lw + 18, x0 = x - w, y = 646;
-	gfx_alpha(0x2D);
-	gfx_rrect(x0, y, w, 44, 22, TEXT2, TEXT2);
-	gfx_alpha(0x80);
-	gfx_rrect(x0 + 1, y + 1, w - 2, 42, 21, 0x0B1430, 0x0A1128);
-	int kx = x0 + 8;
-	if (key_icon >= 0) {
-		gfx_rrect(kx, y + 7, 30, 30, 15, CHROME_T, CHROME_B);
-		gfx_icon(key_icon, kx + 8, y + 15, IRIS);
-	} else {
-		gfx_rrect(kx, y + 9, kw, 26, 13, CHROME_T, CHROME_B);
-		gfx_text(&gfx_font_mono, kx + 10, y + 12, key_text, INK);
-	}
-	gfx_icon(action_icon, kx + kw + 10, y + 13, ICE);
-	gfx_text(&gfx_font_ui, kx + kw + 38, y + 11, label, TEXT);
-	return x0 - 12;
+	gfx_rect(x, y, w, 1, rgb), gfx_rect(x, y + h - 1, w, 1, rgb), gfx_rect(x, y, 1, h, rgb), gfx_rect(x + w - 1, y, 1, h, rgb);
 }
 
-static void generic_cover(int i, int x, int y, int w, int h) // no cover file: ORBIT-style card with the title
+static int hint(int x, int key_icon, const char *key_text, const char *label) // right-aligned at x; returns the next x
 {
-	gfx_rrect(x, y, w, h, 6, 0x23306A, 0x0A1026);
+	const int y = 652;
+	int lw = gfx_text_width(&gfx_font_ui, label);
+	gfx_alpha(0x80);
+	gfx_text(&gfx_font_ui, x - lw, y + 3, label, TEXT);
+	x -= lw + 10;
+	if (key_icon >= 0) { // the button: a ring with its symbol in acid (link.elf's cross_hint)
+		float rx[34], ry[34], cx = x - 13, cy = y + 13;
+		for (int i = 0; i < 34; i++) rx[i] = cx + 12 * cosf(i * 6.2832f / 32), ry[i] = cy + 12 * sinf(i * 6.2832f / 32);
+		gfx_stroke(rx, ry, 34, 1.2f, LABEL);
+		gfx_icon(key_icon, (int)cx - 7, (int)cy - 7, ACID);
+		x -= 26;
+	} else { // SELECT: its name in a 1 px frame
+		int kw = gfx_text_width(&gfx_font_mono, key_text) + 16;
+		frame1(x - kw, y + 1, kw, 24, LABEL);
+		gfx_text(&gfx_font_mono, x - kw + 8, y + 5, key_text, ACID);
+		x -= kw;
+	}
+	return x - 28;
+}
+
+static void generic_cover(int i, int x, int y, int w, int h, int a) // no cover file: a hatched panel with the title
+{
+	gfx_alpha(a);
+	gfx_rect(x, y, w, h, 0x11141A);
+	gfx_scissor(x, y, x + w - 1, y + h - 1);
+	for (int d = -h; d < w; d += 12) gfx_line(x + d, y + h, x + d + h, y, TEXT, a / 8, a / 8);
+	gfx_scissor(0, 0, GFX_W - 1, GFX_H - 1);
+	gfx_alpha(a);
 	gfx_icon(kind_icon(i), x + 12, y + 12, LABEL);
 	if (w >= 160) gfx_text(&gfx_font_mono, x + 36, y + 13, *cv[i].serial ? cv[i].serial : kind_label(i), LABEL); // grid: no room
 	char line[64], word[64];
@@ -1516,6 +1375,45 @@ static void generic_cover(int i, int x, int y, int w, int h) // no cover file: O
 		}
 		gfx_text(&gfx_font_ui, x + 12, ly + lines++ * 24, line, TEXT);
 	}
+}
+
+// a header tag at y 86: a 1 px frame (filled: solid, black text), an icon (-1 none, -2 an empty slot), the text
+static int tag(int x, const char *t, int icon, unsigned edge, unsigned ink, int filled) // returns the next x
+{
+	int pad = icon != -1 ? 8 + 18 + 6 : 12, w = pad + gfx_text_width(&gfx_font_mono, t) + 12;
+	if (filled) gfx_rect(x, 86, w, 26, edge), ink = BG;
+	else frame1(x, 86, w, 26, edge);
+	if (icon >= 0) gfx_icon(icon, x + 8, 90, ink);
+	gfx_text(&gfx_font_mono, x + pad, 91, t, ink);
+	return x + w + 10;
+}
+
+static void panel(int x, int y, int w, int h, int icon, const char *title) // △ / START / ○: over the dimmed home
+{
+	gfx_alpha(0x60);
+	gfx_rect(0, 0, GFX_W, GFX_H, BG);
+	gfx_alpha(0x80);
+	gfx_rect(x, y, w, h, PANEL);
+	frame1(x, y, w, h, EDGE);
+	splash_hud(x - 6, y - 6, w + 12, h + 12, 22);
+	gfx_icon(icon, x + 24, y + 24, ACID);
+	gfx_text(&gfx_font_ui, x + 52, y + 21, title, TEXT);
+	gfx_rect(x + 24, y + 58, w - 48, 1, EDGE);
+}
+
+static void sel_row(int x, int y, int w, int h) { gfx_rect(x, y, w, h, ROW), gfx_rect(x, y, 3, h, ACID); } // the cursor
+
+static void value_tag(int xr, int ry, const char *a, int sel, int on, int arrows) // a panel row's value, right-aligned
+{
+	int pw = gfx_text_width(&gfx_font_ui, a) + 64, px = xr - pw;
+	if (sel && on) gfx_rect(px, ry + 5, pw, 30, ACID);
+	else gfx_rect(px, ry + 5, pw, 30, on ? NULD_STEEL : PANEL), frame1(px, ry + 5, pw, 30, on ? EDGE : ROW);
+	unsigned ink = sel && on ? BG : on ? TEXT : LABEL;
+	if (arrows) {
+		gfx_text(&gfx_font_ui, px + 12, ry + 8, "<", ink);
+		gfx_text(&gfx_font_ui, px + pw - 12 - gfx_text_width(&gfx_font_ui, ">"), ry + 8, ">", ink);
+	}
+	gfx_text(&gfx_font_ui, px + 32, ry + 8, a, ink);
 }
 
 // ---- views (phase 10): every view only gives each cover a target box; each frame the drawn box eases towards it
@@ -1610,17 +1508,10 @@ static void draw_cover(int i)
 	const box *b = &shown_box[i];
 	int x = (int)lroundf(b->x), y = (int)lroundf(b->y), w = (int)lroundf(b->w), h = (int)lroundf(b->h);
 	if (b->a < 0.01f || w < 8 || x + w + 60 < 0 || x - 60 > GFX_W || y > GFX_H || y + h < 0) return;
-	if (b->f > 0.01f) { // chrome frame + ice/iris glow, faded with the focus; the glow margin scales with the cover
-		float f = b->f * b->a;
-		int g = 90 * w / LW;
-		gfx_alpha((int)(0x40 * f));
-		gfx_dither(1);
-		gfx_glow(x - g, y - g, w + 2 * g, h + 2 * g, 0x9070FF, ICE);
-		gfx_dither(0);
-		gfx_alpha((int)(0x4C * f));
-		gfx_rrect(x - 5, y - 5, w + 10, h + 10, 7, ICE, ICE);
-		gfx_alpha((int)(0x80 * f));
-		gfx_rrect(x - 4, y - 4, w + 8, h + 8, 6, 0xFFFFFF, 0x8D9BBB);
+	if (b->f > 0.01f) { // acid HUD corners, faded with the focus; their margin scales with the cover
+		int g = 12 * w / LW;
+		gfx_alpha((int)(0x80 * b->f * b->a));
+		splash_hud(x - g, y - g, w + 2 * g, h + 2 * g, 30 * w / LW);
 	}
 	gfx_alpha((int)(0x80 * b->a));
 	cover_seen[i] = frame_n;
@@ -1631,8 +1522,9 @@ static void draw_cover(int i)
 	if (i && cover_sema >= 0 && !im[k] && !((cover_done[i] | cover_req[i]) & 1 << k))
 		cover_req[i] |= 1 << k, SignalSema(cover_sema); // coalesced: max_count 1
 	for (int j = 2; !im[k] && j >= 0; j--) k = j; // not read (yet): the biggest one there is
-	if (!im[k]) generic_cover(i, x, y, w, h);
+	if (!im[k]) generic_cover(i, x, y, w, h, (int)(0x80 * b->a));
 	else gfx_image(im[k], iw[k], ih[k], x, y, w, h);
+	frame1(x, y, w, h, b->f > 0.5f ? 0x3A4150 : 0x232833);
 }
 
 static void list_rows(int sel, float lscroll, float pill_y, float pres) // the list's text side; pres: 0..1 presence
@@ -1640,10 +1532,8 @@ static void list_rows(int sel, float lscroll, float pill_y, float pres) // the l
 	char t[96];
 	if (pres < 0.01f) return;
 	float pa = pres * edge_fade(pill_y, LROW - 6, LY0 - 4, LY0 + LVIS * LROW + 4, 26);
-	gfx_alpha((int)(0x26 * pa)); // highlight pill, gliding to the selected row
-	gfx_rrect(LX - 1, (int)pill_y - 1, LWID + 2, LROW - 4, (LROW - 6) / 2 + 1, ICE, IRIS);
-	gfx_alpha((int)(0x80 * pa));
-	gfx_rrect(LX, (int)pill_y, LWID, LROW - 6, (LROW - 6) / 2, 0x1B2850, 0x0D1530);
+	gfx_alpha((int)(0x80 * pa)); // the cursor's row, gliding to the selection
+	sel_row(LX, (int)pill_y, LWID, LROW - 6);
 	int first = (int)lscroll - 1, last = (int)lscroll + LVIS + 1;
 	for (int p = first < 0 ? 0 : first; p < nord && p <= last; p++) {
 		int i = order[p];
@@ -1652,7 +1542,7 @@ static void list_rows(int sel, float lscroll, float pill_y, float pres) // the l
 		if (a < 0.01f) continue;
 		int x = LX + (int)(-40 * (1 - ease(row))), cy = (int)y + (LROW - 6) / 2;
 		gfx_alpha((int)(0x80 * a));
-		gfx_icon(kind_icon(i), x + 20, cy - 9, i == sel ? ICE : LABEL);
+		gfx_icon(kind_icon(i), x + 20, cy - 9, i == sel ? ACID : LABEL);
 		fit(&gfx_font_ui, cv[i].title, LWID - 190, t, sizeof(t));
 		gfx_text(&gfx_font_ui, x + 52, cy - 11, t, i == sel ? TEXT : TEXT2);
 		gfx_text(&gfx_font_mono, x + LWID - 20 - gfx_text_width(&gfx_font_mono, cv[i].serial), cy - 9, cv[i].serial,
@@ -1667,21 +1557,13 @@ static void fit(const gfx_font *f, const char *s, int max_w, char *out, int n) /
 		strcpy(out + len - 4, "...");
 }
 
-static void options_panel(int i, int row) // △ menu (design: ORBIT panel): dimmed home, rrect panel, value pills
+static void options_panel(int i, int row) // △ menu: the game's Neutrino options
 {
 	char a[96];
 	int x = 300, y = 130, w = 680, h = 70 + 3 * 46 + 34 + 5 * 46 + 16;
-	gfx_alpha(0x50);
-	gfx_rect(0, 0, GFX_W, GFX_H, NIGHT);
-	gfx_alpha(0x30);
-	gfx_rrect(x - 1, y - 1, w + 2, h + 2, 19, ICE, IRIS);
-	gfx_alpha(0x80);
-	gfx_rrect(x, y, w, h, 18, 0x16224A, 0x0A1128);
-	gfx_icon(UI_GEAR_18, x + 24, y + 24, ICE);
 	fit(&gfx_font_ui, cv[i].title, w - 220, a, sizeof(a));
-	gfx_text(&gfx_font_ui, x + 52, y + 21, a, TEXT);
+	panel(x, y, w, h, UI_GEAR_18, a);
 	gfx_text(&gfx_font_mono, x + w - 24 - gfx_text_width(&gfx_font_mono, cv[i].serial), y + 24, cv[i].serial, TEXT2);
-	gfx_line(x + 24, y + 58, x + w - 24, y + 58, TEXT2, 0x30, 0x10);
 	int ry = y + 70;
 	for (int r = 0; r < OPT_ROWS; r++) {
 		if (r == OPT_GC) { // section label
@@ -1690,30 +1572,18 @@ static void options_panel(int i, int row) // △ menu (design: ORBIT panel): dim
 			gfx_tracking(0);
 			ry += 34;
 		}
-		if (r == row) {
-			gfx_alpha(0x28);
-			gfx_rrect(x + 12, ry, w - 24, 40, 20, ICE, ICE);
-			gfx_alpha(0x80);
-		}
+		if (r == row) sel_row(x + 12, ry, w - 24, 40);
 		const char *label = r == OPT_VIDEO ? "Video" : r == OPT_COMPAT ? L("Compatibilidad de video", "Video compatibility") :
 		                    r == OPT_MC ? "Memory card" : gc_names[r - OPT_GC];
 		gfx_text(&gfx_font_ui, x + 28, ry + 8, label, r == row ? TEXT : TEXT2);
 		opt_value(i, r, a, sizeof(a));
-		int on = r < OPT_GC || game_gc(i, r - OPT_GC), pw = gfx_text_width(&gfx_font_ui, a) + 64, px = x + w - 24 - pw;
-		if (on) gfx_rrect(px, ry + 5, pw, 30, 15, r == row ? CHROME_T : 0x2A3A6E, r == row ? CHROME_B : 0x1B2850);
-		else gfx_rrect(px, ry + 5, pw, 30, 15, 0x1B2340, 0x141B33);
-		unsigned ink = on && r == row ? INK : on ? TEXT : LABEL;
-		if (r < OPT_GC) {
-			gfx_text(&gfx_font_ui, px + 12, ry + 8, "<", ink);
-			gfx_text(&gfx_font_ui, px + pw - 12 - gfx_text_width(&gfx_font_ui, ">"), ry + 8, ">", ink);
-		}
-		gfx_text(&gfx_font_ui, px + 32, ry + 8, a, ink);
+		value_tag(x + w - 24, ry, a, r == row, r < OPT_GC || game_gc(i, r - OPT_GC), r < OPT_GC);
 		ry += 46;
 	}
 }
 
 // ---- setup wizard (#15): the config.ini basics, the boot stub on a chosen memory card and how FreeMcBoot 1.966
-// starts it (fmcb.c). Opens by itself on the first boot (no config.ini) and with START; saving restarts ORBIT so
+// starts it (fmcb.c). Opens by itself on the first boot (no config.ini) and with START; saving restarts NULD so
 // every setting takes effect. ponytail: no IP editor, DHCP or the fixed IP config.ini already has ----
 enum { W_UPD, W_LANG, W_SRC, W_MC, W_VIDEO, W_NET, W_CARD, W_FMCB, W_SAVE, W_ROWS }; // W_UPD: only with an update
 static const char w_chip[] = {SRC_USB, SRC_HDD, SRC_MX4SIO, SRC_ILINK, SRC_MMCE, SRC_UDPBD, SRC_UDPFS}; // checkboxes
@@ -1723,7 +1593,7 @@ static const char *const w_mcm[3] = {"juego", "compartida", "fisica"}, *const w_
 static const char *const w_lk[] = {"Auto", "R1", "L1", "R2", "L2", "Triangle", "Circle", "Square", "Cross", "Start", "Select"};
 static const char *const w_lk_es[] = {"Auto", "R1", "L1", "R2", "L2", "Triángulo", "Círculo", "Cuadrado", "X", "Start", "Select"};
 #define W_NLK 11 // w_val[W_FMCB]: 0 no change, 1 autoboot, 2..W_NLK a button, W_NLK + 1 an item in FMCB's menu
-#define W_STUB "mc?:/BOOT/ORBIT.ELF"
+#define W_STUB "mc?:/BOOT/NULD.ELF"
 #define FMCB_ROOM 1024
 static int wiz = -1, w_val[W_ROWS]; // the selected row, -1 closed; each row's choice
 static volatile int w_job, w_done;  // for the icon thread (libmc): 1 read the FMCB configs, 2 save; w_done when over
@@ -1774,7 +1644,7 @@ static void wiz_save(void) // icon thread
 	snprintf(w_sum[0], 100, "%s: %s", CONFIG, ok ? L("guardado", "saved") : L("ERROR al guardar", "ERROR saving"));
 	w_nsum = 1;
 	int c = w_val[W_CARD], stub = c >= 0 && stub_write(c), v = w_val[W_FMCB], fp = w_fmcb_card();
-	if (c >= 0) snprintf(w_sum[w_nsum++], 100, "mc%d:/BOOT/ORBIT.ELF: %s", c, stub ? "ok" : "ERROR");
+	if (c >= 0) snprintf(w_sum[w_nsum++], 100, "mc%d:/BOOT/NULD.ELF: %s", c, stub ? "ok" : "ERROR");
 	if (v > 0 && fp >= 0 && stub) {
 		char *t = fmcb_txt[fp], key[24];
 		int bn, max = fmcb_len[fp] + FMCB_ROOM;
@@ -1782,9 +1652,9 @@ static void wiz_save(void) // icon thread
 		ok = bak || mc_write(fp, "/SYS-CONF/FREEMCB.CNF.bak", t, strlen(t));
 		free(bak);
 		snprintf(key, sizeof(key), "LK_%s_E1", w_lk[v <= W_NLK ? v - 1 : 0]);
-		ok = ok && (v <= W_NLK ? cnf_set(t, max, key, W_STUB) : cnf_menu_add(t, max, "ORBIT", W_STUB) > 0);
+		ok = ok && (v <= W_NLK ? cnf_set(t, max, key, W_STUB) : cnf_menu_add(t, max, "NULD", W_STUB) > 0);
 		ok = ok && mc_write(fp, "/SYS-CONF/FREEMCB.CNF", t, strlen(t));
-		snprintf(w_sum[w_nsum++], 100, "mc%d:/SYS-CONF/FREEMCB.CNF: %s", fp, ok ? (v <= W_NLK ? key : L("menú + ORBIT", "menu + ORBIT")) : "ERROR");
+		snprintf(w_sum[w_nsum++], 100, "mc%d:/SYS-CONF/FREEMCB.CNF: %s", fp, ok ? (v <= W_NLK ? key : L("menú + NULD", "menu + NULD")) : "ERROR");
 	}
 }
 
@@ -1832,7 +1702,7 @@ static void update_install(void) // icon thread: every file that differs, downlo
 	}
 	upd_phase = 0;
 	free(buf);
-	snprintf(w_sum[w_nsum++], 100, ok ? L("ORBIT %s instalado", "ORBIT %s installed") : L("No se actualizó", "Not updated"), upd.version);
+	snprintf(w_sum[w_nsum++], 100, ok ? L("NULD %s instalado", "NULD %s installed") : L("No se actualizó", "Not updated"), upd.version);
 	if (ok) upd_avail = 0;
 }
 
@@ -1870,7 +1740,7 @@ static void wiz_value(int r, char *a, int n) // the row's choice in words
 		else if (v <= W_NLK) snprintf(a, n, L("Botón %s", "Button %s"), lang_en ? w_lk[v - 1] : w_lk_es[v - 1]);
 		else snprintf(a, n, L("Entrada en el menú de FMCB", "Item in FMCB's menu"));
 		break;
-	case W_UPD: snprintf(a, n, L("Actualizar ORBIT a %s", "Update ORBIT to %s"), upd.version); break;
+	case W_UPD: snprintf(a, n, L("Actualizar NULD a %s", "Update NULD to %s"), upd.version); break;
 	default: snprintf(a, n, "%s", L("Guardar y reiniciar", "Save and restart"));
 	}
 }
@@ -1904,11 +1774,10 @@ static void wiz_chips(int x, int ry, int sel) // the sources row's checkboxes, r
 	for (int k = 0; k < W_NCHIP; k++) w += gfx_text_width(&gfx_font_mono, src_label[(int)w_chip[k]]) + 24 + (k ? 6 : 0);
 	for (int k = 0; k < W_NCHIP; k++) {
 		const char *t = src_label[(int)w_chip[k]];
-		int on = w_val[W_SRC] & 1u << w_chip[k], cw = gfx_text_width(&gfx_font_mono, t) + 24;
-		if (sel && k == w_cur) gfx_rrect(x - w - 2, ry + 3, cw + 4, 34, 17, ICE, IRIS);
-		int cur = sel && k == w_cur; // checked: bright blue and white; unchecked: almost the panel, dim text
-		gfx_rrect(x - w, ry + 5, cw, 30, 15, on ? (cur ? CHROME_T : 0x4A6AC0) : 0x111830, on ? (cur ? CHROME_B : 0x2E4890) : 0x0C1124);
-		gfx_text(&gfx_font_mono, x - w + 12, ry + 11, t, on ? (cur ? INK : TEXT) : cur ? TEXT2 : 0x4A5578);
+		int on = w_val[W_SRC] & 1u << w_chip[k], cw = gfx_text_width(&gfx_font_mono, t) + 24, cur = sel && k == w_cur;
+		if (on) gfx_rect(x - w, ry + 5, cw, 30, cur ? ACID : NULD_STEEL); // checked: solid; unchecked: a frame, dim text
+		else frame1(x - w, ry + 5, cw, 30, cur ? ACID : ROW);
+		gfx_text(&gfx_font_mono, x - w + 12, ry + 11, t, on ? (cur ? BG : TEXT) : cur ? TEXT2 : DIM);
 		w -= cw + 6;
 	}
 }
@@ -1917,25 +1786,17 @@ static void wiz_panel(void) // design: the △ options panel
 {
 	char a[128];
 	int r0 = upd_avail ? W_UPD : W_LANG, x = 270, y = upd_avail ? 74 : 96, w = 740, h = 70 + (W_ROWS - r0) * 46 + 40;
-	gfx_alpha(0x50);
-	gfx_rect(0, 0, GFX_W, GFX_H, NIGHT);
-	gfx_alpha(0x30);
-	gfx_rrect(x - 1, y - 1, w + 2, h + 2, 19, ICE, IRIS);
-	gfx_alpha(0x80);
-	gfx_rrect(x, y, w, h, 18, 0x16224A, 0x0A1128);
-	gfx_icon(UI_GEAR_18, x + 24, y + 24, ICE);
-	gfx_text(&gfx_font_ui, x + 52, y + 21, L("Configuración de ORBIT", "ORBIT setup"), TEXT);
-	gfx_line(x + 24, y + 58, x + w - 24, y + 58, TEXT2, 0x30, 0x10);
+	panel(x, y, w, h, UI_GEAR_18, L("Configuración de NULD", "NULD setup"));
 	int ry = y + 70;
 	if (w_done == 2 || w_job == 3) { // the summary (an update fills it as it goes)
 		for (int k = 0; k < w_nsum; k++, ry += 40) gfx_text(&gfx_font_mono, x + 28, ry + 10, w_sum[k], TEXT);
-		if (w_job != 3) gfx_text(&gfx_font_ui, x + 28, y + h - 50, L("X: reiniciar ORBIT", "X: restart ORBIT"), ICE);
+		if (w_job != 3) gfx_text(&gfx_font_ui, x + 28, y + h - 50, L("X: reiniciar NULD", "X: restart NULD"), ACID);
 		else if (upd_phase && upd_k >= 0) { // the current file: its download, then its write to the USB
 			int size = upd.f[upd_k].size, got = upd_phase == 1 ? net_got : upd_done, pct = size > 0 ? (int)(100LL * got / size) : 0;
 			pct = pct > 100 ? 100 : pct;
 			int bx = x + 28, by = y + h - 70, bw = w - 56 - 70;
-			gfx_rrect(bx, by, bw, 14, 7, 0x111830, 0x0C1124);
-			if (pct) gfx_rrect(bx, by, 14 + (bw - 14) * pct / 100, 14, 7, upd_phase == 1 ? ICE : GOLD, upd_phase == 1 ? IRIS : GOLD);
+			gfx_rect(bx, by + 4, bw, 6, NULD_STEEL);
+			gfx_rect(bx, by + 4, bw * pct / 100, 6, upd_phase == 1 ? ACID : TEXT);
 			snprintf(a, sizeof(a), "%d%%", pct);
 			gfx_text(&gfx_font_mono, x + w - 28 - gfx_text_width(&gfx_font_mono, a), by - 3, a, TEXT);
 		}
@@ -1945,21 +1806,12 @@ static void wiz_panel(void) // design: the △ options panel
 		{"", "Idioma", "Juegos desde", "Memory card", "Vídeo", "Red", "Arrancador en", "FreeMcBoot", ""},
 		{"", "Language", "Games from", "Memory card", "Video", "Network", "Boot stub on", "FreeMcBoot", ""}};
 	for (int r = r0; r < W_ROWS; r++, ry += 46) {
-		if (r == wiz) {
-			gfx_alpha(0x28);
-			gfx_rrect(x + 12, ry, w - 24, 40, 20, ICE, ICE);
-			gfx_alpha(0x80);
-		}
+		if (r == wiz) sel_row(x + 12, ry, w - 24, 40);
 		if (r == W_SRC) { gfx_text(&gfx_font_ui, x + 28, ry + 8, lab[lang_en][r], r == wiz ? TEXT : TEXT2), wiz_chips(x + w - 24, ry, r == wiz); continue; }
 		wiz_value(r, a, sizeof(a));
-		if (r == W_SAVE || r == W_UPD) { gfx_text(&gfx_font_ui, x + (w - gfx_text_width(&gfx_font_ui, a)) / 2, ry + 8, a, r == wiz ? TEXT : r == W_UPD ? GOLD : ICE); continue; }
+		if (r == W_SAVE || r == W_UPD) { gfx_text(&gfx_font_ui, x + (w - gfx_text_width(&gfx_font_ui, a)) / 2, ry + 8, a, r == wiz ? TEXT : ACID); continue; }
 		gfx_text(&gfx_font_ui, x + 28, ry + 8, lab[lang_en][r], r == wiz ? TEXT : TEXT2);
-		int pw = gfx_text_width(&gfx_font_ui, a) + 64, px = x + w - 24 - pw;
-		gfx_rrect(px, ry + 5, pw, 30, 15, r == wiz ? CHROME_T : 0x2A3A6E, r == wiz ? CHROME_B : 0x1B2850);
-		unsigned ink = r == wiz ? INK : TEXT;
-		gfx_text(&gfx_font_ui, px + 12, ry + 8, "<", ink);
-		gfx_text(&gfx_font_ui, px + pw - 12 - gfx_text_width(&gfx_font_ui, ">"), ry + 8, ">", ink);
-		gfx_text(&gfx_font_ui, px + 32, ry + 8, a, ink);
+		value_tag(x + w - 24, ry, a, r == wiz, 1, 1);
 	}
 	if (wiz == W_FMCB && w_val[W_FMCB] > 1 && w_val[W_FMCB] <= W_NLK && w_fmcb_card() >= 0) { // what that button runs now
 		char key[24], cur[64];
@@ -1977,13 +1829,6 @@ static void ach_panel(int i, int row)
 	static short ord[RA_LIST_MAX];
 	char a[160], b[160];
 	int x = 240, y = 96, w = 800, h = 70 + ACH_ROWS * ACH_ROW_H + 20, n = 0, got = 0, pts = 0, all = 0;
-	gfx_alpha(0x50);
-	gfx_rect(0, 0, GFX_W, GFX_H, NIGHT);
-	gfx_alpha(0x30);
-	gfx_rrect(x - 1, y - 1, w + 2, h + 2, 19, GOLD, IRIS);
-	gfx_alpha(0x80);
-	gfx_rrect(x, y, w, h, 18, 0x16224A, 0x0A1128);
-	gfx_icon(UI_TROPHY_18, x + 24, y + 24, GOLD);
 	int ready = ra_list_for == i && ra_list_st == 2;
 	if (ready) { // earned first, each part in the set's own order
 		n = ra_list_n;
@@ -1994,9 +1839,8 @@ static void ach_panel(int i, int row)
 		snprintf(b, sizeof(b), "%d / %d  ·  %d / %d PTS", got, n, pts, all);
 	} else *b = 0;
 	fit(&gfx_font_ui, cv[i].title, w - 120 - gfx_text_width(&gfx_font_mono, b), a, sizeof(a));
-	gfx_text(&gfx_font_ui, x + 52, y + 21, a, TEXT);
-	gfx_text(&gfx_font_mono, x + w - 24 - gfx_text_width(&gfx_font_mono, b), y + 24, b, GOLD);
-	gfx_line(x + 24, y + 58, x + w - 24, y + 58, TEXT2, 0x30, 0x10);
+	panel(x, y, w, h, UI_TROPHY_18, a);
+	gfx_text(&gfx_font_mono, x + w - 24 - gfx_text_width(&gfx_font_mono, b), y + 24, b, ACID);
 	if (!ready) {
 		const char *m = ra_list_for == i && ra_list_st < 0 ? L("No se pudo leer la lista: la página del cliente en nuld debe estar abierta a la red",
 		                  "Could not read the list: the client's page on nuld must be open to the network") : L("Cargando logros...", "Loading achievements...");
@@ -2009,24 +1853,20 @@ static void ach_panel(int i, int row)
 	for (int r = 0; r < ACH_ROWS && top + r < n; r++) {
 		const ra_ach *e = &ra_list[ord[top + r]];
 		int ry = y + 70 + r * ACH_ROW_H, sel = top + r == row;
-		if (sel) {
-			gfx_alpha(0x28);
-			gfx_rrect(x + 12, ry, w - 24, ACH_ROW_H - 6, 18, ICE, ICE);
-			gfx_alpha(0x80);
-		}
+		if (sel) sel_row(x + 12, ry, w - 24, ACH_ROW_H - 6);
 		snprintf(b, sizeof(b), "%d PTS", e->points);
 		int bw = gfx_text_width(&gfx_font_mono, b);
-		gfx_icon(UI_TROPHY_18, x + 28, ry + 15, e->earned ? GOLD : 0x5A6787);
+		gfx_icon(UI_TROPHY_18, x + 28, ry + 15, e->earned ? ACID : DIM);
 		fit(&gfx_font_ui, e->title, w - 120 - bw, a, sizeof(a));
 		gfx_text(&gfx_font_ui, x + 60, ry + 4, a, e->earned || sel ? TEXT : TEXT2);
 		fit(&gfx_font_mono, e->desc, w - 120 - bw, a, sizeof(a));
 		gfx_text(&gfx_font_mono, x + 60, ry + 28, a, LABEL);
-		gfx_text(&gfx_font_mono, x + w - 28 - bw, ry + 15, b, e->earned ? GOLD : LABEL);
+		gfx_text(&gfx_font_mono, x + w - 28 - bw, ry + 15, b, e->earned ? ACID : LABEL);
 	}
 	if (n > ACH_ROWS) { // where the window is: a thin bar on the right edge
 		int th = (h - 90) * ACH_ROWS / n, ty = y + 70 + (h - 90 - th) * top / (n - ACH_ROWS);
 		gfx_alpha(0x40);
-		gfx_rrect(x + w - 10, ty, 4, th, 2, TEXT2, TEXT2);
+		gfx_rect(x + w - 10, ty, 4, th, TEXT2);
 		gfx_alpha(0x80);
 	}
 }
@@ -2036,25 +1876,19 @@ static const char *toast_msg;
 static void home(int sel, float s, float k, int toast, int opt, const char *overlay, float fade) // opt: panel row, -1 closed
 {
 	char a[96], b[96];
+	static int amb; // frames on the home screen: the floor flows towards the viewer
+	(void)s;
 	gfx_begin();
-	gfx_alpha(0x80);
-	gfx_hstrip(home_bg, 64, GFX_H, 0); // navy -> night, Floyd-Steinberg dithered at boot, repeated across
-	static int amb;
-	ambient(amb++, s);
+	splash_floor(amb++ / 120.f, TEXT, 0x12);
 
 	list_rows(sel, lscroll, pill_y, lpres);
 	for (int i = 0; i < ncv; i++)
 		if (i != sel) draw_cover(i);
 	if (ncv) draw_cover(sel); // last: its frame stays on top while it grows
 
-	// header: orb, chrome title, chips; saves card on the right — always the selected game, fading in
+	// header: the mark, the title, its tags; the saves card on the right — always the selected game, fading in
 	gfx_alpha(0x80);
-	gfx_alpha(0x30);
-	gfx_dither(1);
-	gfx_glow(44, 25, 96, 96, ICE, ICE);
-	gfx_dither(0);
-	gfx_alpha(0x80);
-	gfx_orb(64, 45, 56);
+	splash_mark(92, 73, 24);
 	if (ncv && k > 0) {
 		int cx = GFX_W - 64;
 		if (is_ps2(sel) && *cv[sel].serial) { // saves card: PS2 games only (PS1 saves live in POPS VMCs, apps have none)
@@ -2065,15 +1899,9 @@ static void home(int sel, float s, float k, int toast, int opt, const char *over
 		                         gfx_text_width(&gfx_font_ui, a) : gfx_text_width(&gfx_font_mono, b)) + 18;
 		cx = GFX_W - 64 - cw;
 		int sx = cx + 18, sy = 48; // card: padding 12 / 18, 64x64 icon slot (design)
-		gfx_alpha((int)(0x26 * k));
-		gfx_rrect(cx - 1, 35, cw + 2, 90, 19, ICE, ICE);
 		gfx_alpha((int)(0x80 * k));
-		gfx_rrect(cx, 36, cw, 88, 18, 0x1B2850, 0x0D1530);
-		gfx_alpha((int)(0x40 * k));
-		gfx_dither(1);
-		gfx_glow(sx + 4, sy + 50, 56, 12, ICE, ICE); // the icon's floor glow
-		gfx_dither(0);
-		gfx_alpha((int)(0x80 * k));
+		gfx_rect(cx, 36, cw, 88, PANEL);
+		frame1(cx, 36, cw, 88, EDGE);
 		if (icon_sema >= 0 && ((vm && !vmc_state[sel]) || (sc && !gicon_state[sel]))) // coalesced: max_count 1
 			icon_want = sel, SignalSema(icon_sema);
 		icon *ic = sc && gicon_state[sel] == 2 ? gicon[sel] : NULL;
@@ -2084,134 +1912,96 @@ static void home(int sel, float s, float k, int toast, int opt, const char *over
 		// one animation frame per video frame x its speed (estimate, sources.md); 1/8 turn a second (design: D)
 		int drawn = ic && mesh && gfx_mesh(ic->tex, mesh, icon_draw_list(ic, frame * (ic->speed > 0 ? ic->speed : 1),
 		                                                                 frame * 6.28318f / 480, 4, 0, 56, mesh), sx, sy);
-		if (!drawn) gfx_icon(UI_MEMCARD_48, sx + 8, sy + 4, sc ? ICE : 0x5A6787); // loading, failed, or no save
+		if (!drawn) gfx_icon(UI_MEMCARD_48, sx + 8, sy + 4, sc ? ACID : DIM); // loading, failed, or no save
 		gfx_text(&gfx_font_ui, cx + 96, 58, a, TEXT);
 		gfx_text(&gfx_font_mono, cx + 96, 82, b, TEXT2);
 		}
 
 		fit(&gfx_font_title, cv[sel].title, cx - 40 - 140, a, sizeof(a));
-		gfx_text_chrome(&gfx_font_title, 140, 34, a);
-		int x = 140, w;
-		if (*cv[sel].serial) { // serial chip
-			w = gfx_text_width(&gfx_font_mono, cv[sel].serial) + 24;
-			gfx_alpha((int)(0x60 * k));
-			gfx_rrect(x, 86, w, 26, 13, TEXT2, TEXT2);
-			gfx_alpha((int)(0x80 * k));
-			gfx_rrect(x + 1, 87, w - 2, 24, 12, 0x0E1838, 0x0D1634);
-			gfx_text(&gfx_font_mono, x + 12, 90, cv[sel].serial, TEXT2);
-			x += w + 10;
-		}
-		const char *media = kind_label(sel);
-		w = 8 + 18 + 6 + gfx_text_width(&gfx_font_ui, media) + 12;               // kind chip (chrome)
-		gfx_rrect(x, 86, w, 26, 13, CHROME_T, 0xBAC6DE);
-		gfx_icon(kind_icon(sel), x + 8, 90, INK);
-		gfx_text(&gfx_font_ui, x + 32, 89, media, INK);
-		x += w + 10;
+		gfx_alpha(0x80);
+		gfx_text(&gfx_font_title, 140, 34, a, TEXT);
+		gfx_alpha((int)(0x80 * k));
+		int x = 140;
+		if (*cv[sel].serial) x = tag(x, cv[sel].serial, -1, EDGE, TEXT2, 0);
+		x = tag(x, kind_label(sel), kind_icon(sel), TEXT, BG, 1);
 		static const int src_icon[SRC_N] = {UI_USB_18, UI_HDD_18, UI_HDD_18, UI_MX4SIO_18, UI_ILINK_18, UI_MMCE_18,
 		                                    UI_NET_18, UI_NET_18};
 		int st = src[(int)cv[sel].src].type;
 		const char *src_txt = cv[sel].kind == K_DISC ? L("UNIDAD", "DRIVE") : st == SRC_HDL ? "HDL" : src_label[st];
-		w = 8 + 18 + 6 + gfx_text_width(&gfx_font_ui, src_txt) + 12;             // source chip (iris)
-		gfx_alpha((int)(0x8C * k / 2));
-		gfx_rrect(x, 86, w, 26, 13, IRIS, IRIS);
-		gfx_alpha((int)(0x80 * k));
-		gfx_rrect(x + 1, 87, w - 2, 24, 12, 0x241C52, 0x1E1746);
-		gfx_icon(cv[sel].kind == K_DISC ? UI_DVD_18 : src_icon[st], x + 8, 90, IRIS);
-		gfx_text(&gfx_font_ui, x + 32, 89, src_txt, TEXT);
-		x += w + 10;
-		if (cv[sel].kind == K_PS2) { // video chip: what Neutrino will force
-		const char *vm = vid_label[game_video(sel)];
-		w = 8 + 18 + 6 + gfx_text_width(&gfx_font_ui, vm) + 12;                  // video chip (ice)
-		gfx_alpha((int)(0x8C * k / 2));
-		gfx_rrect(x, 86, w, 26, 13, ICE, ICE);
-		gfx_alpha((int)(0x80 * k));
-		gfx_rrect(x + 1, 87, w - 2, 24, 12, 0x0E2440, 0x0B1C36);
-		gfx_icon(UI_CHIP_18, x + 8, 90, ICE);
-		gfx_text(&gfx_font_ui, x + 32, 89, vm, TEXT);
-		x += w + 10;
-		}
-		if (ra_game_ok(sel)) { // achievements chip (phase 16): "LOGROS ·" while asking, none without a set
+		x = tag(x, src_txt, cv[sel].kind == K_DISC ? UI_DVD_18 : src_icon[st], ACID, ACID, 0); // the source: acid
+		if (cv[sel].kind == K_PS2) x = tag(x, vid_label[game_video(sel)], UI_CHIP_18, EDGE, TEXT, 0); // what Neutrino forces
+		if (ra_game_ok(sel)) { // achievements tag (phase 16): "LOGROS" with a spinner while asking, none without a set
 			if (!ra_state[sel] && ra_sema >= 0) ra_want = sel, SignalSema(ra_sema); // coalesced: max_count 1
 			int st = ra_state[sel];
 			if (st <= 1 || st == RA_SET) {
 				char t[24];
 				if (st == RA_SET) snprintf(t, sizeof(t), L("LOGROS %d", "ACHIEVEMENTS %d"), ra_count[sel]);
 				else snprintf(t, sizeof(t), L("LOGROS", "ACHIEVEMENTS"));
-				w = 8 + 18 + 6 + gfx_text_width(&gfx_font_ui, t) + 12;              // achievements chip (gold)
-				gfx_alpha((int)(0x8C * k / 2));
-				gfx_rrect(x, 86, w, 26, 13, GOLD, GOLD);
-				gfx_alpha((int)(0x80 * k));
-				gfx_rrect(x + 1, 87, w - 2, 24, 12, 0x3A2E10, 0x2A210B);
-				if (st == RA_SET) gfx_icon(UI_SPARKLE_12, x + 11, 93, GOLD);
-				else { // asking: a spinner of 8 dots, the bright one going round (one turn per 0.8 s)
+				int x0 = x;
+				x = tag(x, t, st == RA_SET ? UI_TROPHY_18 : -2, ACID, st == RA_SET ? ACID : TEXT2, 0);
+				if (st != RA_SET) { // asking: a spinner of 8 dots, the bright one going round (one turn per 0.8 s)
 					static int spin;
 					spin++;
 					for (int d = 0; d < 8; d++) {
 						float a = d * 0.785398f;
 						int fade = (spin / 6 - d) & 7; // 0 = the head, the tail fading behind it
 						gfx_alpha((int)(0x80 * k * (1 - fade / 9.f)));
-						gfx_rrect(x + 17 + (int)lroundf(6 * cosf(a)) - 1, 99 + (int)lroundf(6 * sinf(a)) - 1, 3, 3, 1, GOLD, GOLD);
+						gfx_rect(x0 + 17 + (int)lroundf(6 * cosf(a)) - 1, 99 + (int)lroundf(6 * sinf(a)) - 1, 3, 3, ACID);
 					}
 					gfx_alpha((int)(0x80 * k));
 				}
-				gfx_text(&gfx_font_ui, x + 32, 89, t, st == RA_SET ? TEXT : TEXT2);
 			}
 		}
 	}
-	gfx_line(64, 138, 1216, 138, TEXT2, 0x40, 0x13);
+	gfx_alpha(0x80);
+	gfx_rect(64, 138, GFX_W - 128, 1, EDGE);
 
 	gfx_alpha(0x80);
 	if (ncv) { // footer: position in the filter, then the filters (L1 / R1) on the left; hints on the right
 		snprintf(a, sizeof(a), "%02d / %02d", pos[sel] + 1, nord);
-		gfx_text(&gfx_font_mono, 64, 658, a, TEXT);
+		gfx_text(&gfx_font_mono, 64, 658, a, LABEL);
 		int tx = 64 + gfx_text_width(&gfx_font_mono, a) + 16;
 		for (int fl = -1; fl <= F_N; fl++) {
 			if (fl < 0 || fl == F_N) { // L1 / R1 key caps at both ends
 				const char *key = fl < 0 ? "L1" : "R1";
 				int kw = gfx_text_width(&gfx_font_mono, key) + 12;
-				gfx_alpha(0x80);
-				gfx_rrect(tx, 655, kw, 22, 11, CHROME_T, CHROME_B);
-				gfx_text(&gfx_font_mono, tx + 6, 658, key, INK);
+				frame1(tx, 655, kw, 22, LABEL);
+				gfx_text(&gfx_font_mono, tx + 6, 658, key, TEXT2);
 				tx += kw + 6;
 				continue;
 			}
 			int pw = gfx_text_width(&gfx_font_mono, filter_name[fl]) + 18, on = fl == filter;
-			gfx_alpha(on ? 0x80 : 0x30);
-			gfx_rrect(tx, 655, pw, 22, 11, on ? ICE : TEXT2, on ? ICE : TEXT2);
-			if (!on) gfx_alpha(0x80), gfx_rrect(tx + 1, 656, pw - 2, 20, 10, 0x0B1430, 0x0A1128);
-			gfx_alpha(0x80);
-			gfx_text(&gfx_font_mono, tx + 9, 658, filter_name[fl], on ? INK : TEXT2);
+			if (on) gfx_rect(tx, 655, pw, 22, ACID);
+			gfx_text(&gfx_font_mono, tx + 9, 658, filter_name[fl], on ? BG : TEXT2);
 			tx += pw + 6;
 		}
 	}
 	if (wiz >= 0) {
 		wiz_panel();
-		if (w_done != 2 && w_job != 3) hint(hint(GFX_W - 64, UI_CIRCLE_14, NULL, UI_GEAR_18, L("Cerrar", "Close")), UI_CROSS_14, NULL, UI_CHIP_18, L("Cambiar", "Change"));
+		if (w_done != 2 && w_job != 3) hint(hint(GFX_W - 64, UI_CIRCLE_14, NULL, L("Cerrar", "Close")), UI_CROSS_14, NULL, L("Cambiar", "Change"));
 	} else if (opt >= 0) {
 		options_panel(sel, opt);
-		hint(hint(GFX_W - 64, UI_TRIANGLE_14, NULL, UI_GEAR_18, L("Guardar", "Save")), UI_CROSS_14, NULL, UI_CHIP_18, L("Cambiar", "Change"));
+		hint(hint(GFX_W - 64, UI_TRIANGLE_14, NULL, L("Guardar", "Save")), UI_CROSS_14, NULL, L("Cambiar", "Change"));
 	} else if (ach_row >= 0) {
 		ach_panel(sel, ach_row);
-		hint(GFX_W - 64, UI_CIRCLE_14, NULL, UI_TROPHY_18, L("Cerrar", "Close"));
+		hint(GFX_W - 64, UI_CIRCLE_14, NULL, L("Cerrar", "Close"));
 	} else if (ncv) { // "Datos" (not "Datos técnicos"): the filters need the room on the left
 		int logros = ra_game_ok(sel) && ra_state[sel] == RA_SET; // phase 16: its hint takes the room of "Datos" (still on SELECT)
-		int x = hint(logros ? GFX_W - 64 : hint(GFX_W - 64, -1, "SELECT", UI_CHIP_18, L("Datos", "Data")), UI_SQUARE_14, NULL,
-		             view_icon[(view + 1) % V_N], L("Vista", "View"));
-		if (cv[sel].kind == K_PS2) x = hint(x, UI_TRIANGLE_14, NULL, UI_GEAR_18, L("Opciones", "Options")); // Neutrino options only
-		if (logros) x = hint(x, UI_CIRCLE_14, NULL, UI_TROPHY_18, L("Logros", "Achievements"));
-		hint(x, UI_CROSS_14, NULL, UI_PLAY_18, L("Jugar", "Play"));
-	} else hint(GFX_W - 64, -1, "SELECT", UI_CHIP_18, L("Datos", "Data"));
-	if (vlabel > 0) { // the view's or filter's name, a chrome-edged pill centred over the footer, ~1 s after a change
+		int x = hint(logros ? GFX_W - 64 : hint(GFX_W - 64, -1, "SELECT", L("Datos", "Data")), UI_SQUARE_14, NULL, L("Vista", "View"));
+		if (cv[sel].kind == K_PS2) x = hint(x, UI_TRIANGLE_14, NULL, L("Opciones", "Options")); // Neutrino options only
+		if (logros) x = hint(x, UI_CIRCLE_14, NULL, L("Logros", "Achievements"));
+		hint(x, UI_CROSS_14, NULL, L("Jugar", "Play"));
+	} else hint(GFX_W - 64, -1, "SELECT", L("Datos", "Data"));
+	if (vlabel > 0) { // the view's or filter's name, an acid-framed tag centred over the footer, ~1 s after a change
 		float va = vlabel > 50 ? ease((70 - vlabel) / 20.f) : vlabel / 50.f;
 		if (label_filter) snprintf(a, sizeof(a), L("MOSTRAR  %s", "SHOW  %s"), filter_name[filter]);
 		else snprintf(a, sizeof(a), L("VISTA  %s", "VIEW  %s"), view_name[view]);
 		gfx_tracking(3);
 		int w = 18 + 18 + 10 + gfx_text_width(&gfx_font_mono, a) + 20, x = (GFX_W - w) / 2, y = 590 + (int)(8 * (1 - va));
-		gfx_alpha((int)(0x40 * va));
-		gfx_rrect(x - 1, y - 1, w + 2, 38, 19, ICE, IRIS);
 		gfx_alpha((int)(0x80 * va));
-		gfx_rrect(x, y, w, 36, 18, 0x1B2850, 0x0D1530);
-		gfx_icon(label_filter ? UI_GRID_18 : view_icon[view], x + 18, y + 9, ICE);
+		gfx_rect(x, y, w, 36, PANEL);
+		frame1(x, y, w, 36, ACID);
+		gfx_icon(label_filter ? UI_GRID_18 : view_icon[view], x + 18, y + 9, ACID);
 		gfx_text(&gfx_font_mono, x + 46, y + 10, a, TEXT);
 		gfx_tracking(0);
 	}
@@ -2239,16 +2029,17 @@ static void home(int sel, float s, float k, int toast, int opt, const char *over
 	if (toast > 0 && toast_msg) {
 		const char *m = toast_msg;
 		gfx_alpha(toast > 30 ? 0x80 : toast * 0x80 / 30);
-		gfx_text(&gfx_font_ui, GFX_W - 64 - gfx_text_width(&gfx_font_ui, m), 612, m, ICE);
+		gfx_text(&gfx_font_ui, GFX_W - 64 - gfx_text_width(&gfx_font_ui, m), 612, m, ACID);
 	}
 	if (overlay) {
 		int lines = 1;
 		for (const char *c = overlay; *c; c++) lines += *c == '\n';
 		gfx_alpha(0x60);
-		gfx_rrect(48, 150, 1184, lines * gfx_font_mono.line_h + 26, 14, NIGHT, NIGHT);
+		gfx_rect(48, 150, 1184, lines * gfx_font_mono.line_h + 26, BG);
 		gfx_alpha(0x80);
 		gfx_text(&gfx_font_mono, 64, 162, overlay, TEXT);
 	}
+	splash_scan();
 	if (fade > 0) { gfx_alpha((int)(0x80 * fade)); gfx_rect(0, 0, GFX_W, GFX_H, 0); }
 	gfx_end();
 }
@@ -2308,10 +2099,9 @@ static int vmc_ready(int i) // phase 14: the game's virtual card exists, or is c
 	vmc_file(i, path, sizeof(path));
 	if (exists(path)) return 1;
 	gfx_begin();
-	gfx_alpha(0x80);
-	gfx_rect(0, 0, GFX_W, GFX_H, 0);
-	gfx_orb(640 - 28, 250, 56);
-	gfx_text_chrome(&gfx_font_title, (GFX_W - gfx_text_width(&gfx_font_title, cv[i].title)) / 2, 340, cv[i].title);
+	splash_floor(0, TEXT, 0x12);
+	splash_mark(640, 278, 28);
+	text_c(&gfx_font_title, 340, cv[i].title, TEXT);
 	gfx_tracking(3);
 	text_c(&gfx_font_mono, 400, L("CREANDO MEMORY CARD VIRTUAL (8 MB)", "CREATING VIRTUAL MEMORY CARD (8 MB)"), LABEL);
 	gfx_tracking(0);
@@ -2327,7 +2117,7 @@ static int vmc_ready(int i) // phase 14: the game's virtual card exists, or is c
 
 static char self_path[128]; // this ELF as it was started (argv[0]), for restart_self
 
-static void restart_self(void) // the setup wizard saved (#15): start ORBIT again, as launch() leaves for an app
+static void restart_self(void) // the setup wizard saved (#15): start NULD again, as launch() leaves for an app
 {
 	char *argv[2] = {self_path, ""};
 	ra_launching = 1, ra_abort = 1;
@@ -2345,16 +2135,15 @@ static void launch(int i) // per kind (phase 11): Neutrino, POPStarter, an app E
 	                             L("INICIANDO DISCO", "STARTING DISC")};
 	for (int t = 0; t < 40; t++) { // let the confirm sound play while the screen fades to the entry's name
 		gfx_begin();
-		gfx_alpha(0x80);
-		gfx_rect(0, 0, GFX_W, GFX_H, 0);
+		splash_floor(t / 60.f, TEXT, 0x12);
 		gfx_alpha((int)(0x80 * span(t, 0, 20)));
-		gfx_orb(640 - 28, 250, 56);
-		gfx_text_chrome(&gfx_font_title, (GFX_W - gfx_text_width(&gfx_font_title, cv[i].title)) / 2, 340, cv[i].title);
+		splash_mark(640, 278, 28);
+		text_c(&gfx_font_title, 340, cv[i].title, TEXT);
 		gfx_tracking(3);
 		text_c(&gfx_font_mono, 400, how[(int)cv[i].kind], LABEL);
 		if (ra_game_ok(i) && neutrino_ra && ra_state[i] <= RA_SET) // phase 16: X does not wait for the achievements
 			text_c(&gfx_font_mono, 430, ra_state[i] == RA_SET ? L("CON LOGROS", "WITH ACHIEVEMENTS") : L("SIN LOGROS: AÚN NO HABÍA RESPUESTA", "NO ACHIEVEMENTS: NO ANSWER YET"),
-			       ra_state[i] == RA_SET ? GOLD : LABEL);
+			       ra_state[i] == RA_SET ? ACID : LABEL);
 		gfx_tracking(0);
 		gfx_end();
 		gfx_flip();
@@ -2428,12 +2217,12 @@ static void launch(int i) // per kind (phase 11): Neutrino, POPStarter, an app E
 		if (game_gc(i, k)) gc[n++] = gc_modes[k];
 	gc[n] = 0;
 	if (n > 4) argv[argc++] = gc;
-	if (neutrino_igr && igr_exit) // In Game Reset (phase 12): only the ORBIT fork knows these
+	if (neutrino_igr && igr_exit) // In Game Reset (phase 12): only the NULD fork knows these
 		snprintf(igr[0], sizeof(igr[0]), "-igr=0x%04x", igr_exit), argv[argc++] = igr[0];
 	if (neutrino_menu && igr_menu) // in-game menu (phase 13)
 		snprintf(igr[2], sizeof(igr[2]), "-igrmenu=0x%04x", igr_menu), argv[argc++] = igr[2];
 	if (neutrino_igr && (igr_exit || (neutrino_menu && igr_menu)))
-		argv[argc++] = "-igrexit=rom0:OSDSYS"; // the reboot: FMCB comes up from the card and autoboots ORBIT
+		argv[argc++] = "-igrexit=rom0:OSDSYS"; // the reboot: FMCB comes up from the card and autoboots NULD
 	if (neutrino_igr && igr_off) snprintf(igr[1], sizeof(igr[1]), "-igroff=0x%04x", igr_off), argv[argc++] = igr[1];
 	if (neutrino_lang && neutrino_menu && igr_menu && lang_en) argv[argc++] = "-igrlang=en"; // phase 18
 	if (ra) argv[argc++] = "-cfg=ra", argv[argc++] = ra_arg; // phase 16b: the achievements agent and its watch list
@@ -2457,7 +2246,7 @@ static void launch(int i) // per kind (phase 11): Neutrino, POPStarter, an app E
 	if (disc_tid >= 0) TerminateThread(disc_tid);
 	FILE *fp = fopen(LOG_TXT, "a"); // what Neutrino got, for console checks
 	printf("launch:");
-	if (fp) fprintf(fp, "orbit launch:");
+	if (fp) fprintf(fp, "nuld launch:");
 	for (int k = 0; k < argc; k++) {
 		printf(" %s", argv[k]);
 		if (fp) fprintf(fp, " %s", argv[k]);
@@ -2476,7 +2265,7 @@ int main(int argc, char *argv[])
 	home_paths();
 	snprintf(self_path, sizeof(self_path), "%s", argc > 0 && strchr(argv[0], ':') ? argv[0] : "mass0:/launcher.elf");
 	if (!gfx_init()) printf("gfx_init: VRAM pool too small\n");
-	make_backgrounds(); // ~0.5 s, screen black (also inside the HDMI relock time)
+	splash_ver = NULD_VERSION + 1; // "1.2"
 	ChangeThreadPriority(GetThreadId(), 0x20); // render thread above the loader
 	ee_thread_t th = { .func = loader, .stack = loader_stack, .stack_size = sizeof(loader_stack), .gp_reg = &_gp,
 	                   .initial_priority = 0x40 };
@@ -2507,7 +2296,7 @@ int main(int argc, char *argv[])
 	printf("splash: %d frames, %u us/frame by COP0\n", t, t ? (unsigned)(frame_us / t) : 0);
 	FILE *fp = usb ? fopen(LOG_TXT, "a") : NULL; // frames vs wall time: did the animation run at 60 Hz?
 	if (fp) {
-		fprintf(fp, "orbit splash: %d frames (%d black) in %d ms by clock(), %u ms by COP0 = %u us/frame (16667 expected)\n",
+		fprintf(fp, "nuld splash: %d frames (%d black) in %d ms by clock(), %u ms by COP0 = %u us/frame (16667 expected)\n",
 		        t, HOLD, splash_ms, (unsigned)(frame_us / 1000), t ? (unsigned)(frame_us / t) : 0);
 		fclose(fp);
 	}
@@ -2545,10 +2334,10 @@ int main(int argc, char *argv[])
 		}
 		refilter();
 		if (nord && pos[sel] < 0) sel = order[0]; // e.g. the disc changed kind under a PS1 filter
-		if (stub_new) stub_new = 0, toast = 240, toast_msg = L("Arrancador instalado en la memory card: BOOT/ORBIT.ELF", "Boot stub installed on the memory card: BOOT/ORBIT.ELF");
+		if (stub_new) stub_new = 0, toast = 240, toast_msg = L("Arrancador instalado en la memory card: BOOT/NULD.ELF", "Boot stub installed on the memory card: BOOT/NULD.ELF");
 		static char upd_msg[96];
 		if (upd_avail == 1) upd_avail = 2, toast = 360, toast_msg = upd_msg, // #15
-			snprintf(upd_msg, sizeof(upd_msg), L("ORBIT %s disponible: START para actualizar", "ORBIT %s available: START to update"), upd.version);
+			snprintf(upd_msg, sizeof(upd_msg), L("NULD %s disponible: START para actualizar", "NULD %s available: START to update"), upd.version);
 		static int ra_told; // phase 16: once per boot
 		if (ra_down && !ra_told) ra_told = 1, toast = 240, toast_msg = ra_down == 1 ? L("Logros: sin red", "Achievements: no network") : L("Logros: sin servidor", "Achievements: no server");
 		if (w_first && usb && booted) w_first = 0, wiz_open(), play(S_PANEL, 70); // first boot (#15)
@@ -2577,10 +2366,10 @@ int main(int argc, char *argv[])
 					if (vmc_state[sel] == 2) free(vdir[sel]), vdir[sel] = NULL, vmc_state[sel] = 0; // 1: in flight, ponytail
 					if (gicon_state[sel] == 2) gicon_state[sel] = 0, gicon[sel] = NULL; // ponytail: the old icon leaks
 				}
-				if (usb && !ini_save(&games, GAMES_INI, L("; ORBIT - opciones por juego (menú de triángulo)\n"
+				if (usb && !ini_save(&games, GAMES_INI, L("; NULD - opciones por juego (menú de triángulo)\n"
 				                     "; video = nativo | 480p | 1080i, compat = 1-3, gc = modos de Neutrino (0 2 3 5 7),\n"
 				                     "; mc = juego | compartida | fisica\n",
-				                     "; ORBIT - per-game options (triangle menu)\n"
+				                     "; NULD - per-game options (triangle menu)\n"
 				                     "; video = nativo | 480p | 1080i, compat = 1-3, gc = Neutrino modes (0 2 3 5 7),\n"
 				                     "; mc = juego | compartida | fisica\n")))
 					toast = 180, toast_msg = L("No se pudieron guardar las opciones en el USB", "Could not save the options to the USB");
@@ -2693,7 +2482,7 @@ int main(int argc, char *argv[])
 			printf("window %u: median %u us max %u us missed %u\n", windows, med, max, missed);
 			FILE *fp = usb && windows <= 3 ? fopen(LOG_TXT, "a") : NULL;
 			if (fp) {
-				fprintf(fp, "orbit window %u (%d frames, %d covers, overlay %d): median %u us  max %u us  missed vsync %u  "
+				fprintf(fp, "nuld window %u (%d frames, %d covers, overlay %d): median %u us  max %u us  missed vsync %u  "
 				        "load %d ms\n", windows, WINDOW, ncv, overlay, med, max, missed, load_ms);
 				saved = fclose(fp) == 0 ? L("  (GUARDADO EN USB)", "  (SAVED TO USB)") : L("  (ERROR AL GUARDAR)", "  (SAVE ERROR)");
 			}

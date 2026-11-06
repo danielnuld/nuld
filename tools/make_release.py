@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""Build the release zip: dist/ORBIT-<version>.zip (run after build.sh APP=launcher, tools/build_neutrino.sh and
-build.sh orbit_hash). Usage: python tools/make_release.py v1.0 <neutrino dev release dir> <udpfs_server.py>
+"""Build the release zip: dist/NULD-<version>.zip (run after build.sh APP=launcher, tools/build_neutrino.sh and
+build.sh nuld_hash). Usage: python tools/make_release.py v1.0 <neutrino dev release dir> <udpfs_server.py>
 
 Layout, to be copied to the root of the USB drive (server/ goes to the game server instead):
-  launcher.elf  neutrino/ (official dev release + ORBIT's neutrino.elf, ee_core.elf, raagent.irx)  DVD/  CD/
-  server/ (orbit_catalog.py, orbit_hash, udpfs_server.py, systemd units)  tools/covers.py  QUICKSTART.txt  LICENSE
+  launcher.elf  neutrino/ (official dev release + NULD's neutrino.elf, ee_core.elf, raagent.irx)  DVD/  CD/
+  server/ (nuld_catalog.py, nuld_hash, udpfs_server.py, systemd units)  tools/covers.py  QUICKSTART.txt  LICENSE
 """
 import hashlib, os, sys, zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ver, ndev, udpfs = sys.argv[1], sys.argv[2], sys.argv[3]
-name = f"ORBIT-{ver}"
+name = f"NULD-{ver}"
 out = os.path.join(ROOT, "dist", name + ".zip")
 
-QUICKSTART = f"""ORBIT {ver} - quick start
+QUICKSTART = f"""NULD {ver} - quick start
 ============================
 
 1. Copy launcher.elf, neutrino/, DVD/ and CD/ to the root of a FAT32 or exFAT USB drive.
 2. Put your PS2 ISOs in DVD/ (CD games in CD/). PS1 games: POPStarter VCDs in POPS/. Homebrew: APPS/.
 3. On the PS2, start mass0:/launcher.elf (uLaunchELF, or FreeMcBoot's autoboot).
-4. Pick a game and press X. The first boot writes mass0:/orbit/config.ini with every setting, commented.
+4. Pick a game and press X. The first boot writes mass0:/nuld/config.ini with every setting, commented.
 
 Buttons: left/right (or up/down) move, L1/R1 filter, square changes the view, triangle per-game options,
 circle achievements, X play, SELECT data overlay.
@@ -31,42 +31,44 @@ Optional
   Your own: tools/covers.py turns PNG/JPG files named by serial (SLUS-21376.png) into the .c16 pair for
   mass0:/covers/ (python3 covers.py IN_DIR OUT_DIR; needs numpy and Pillow).
   No DNS on your router? Set  [red] dns = 1.1.1.1  in config.ini.
-- Back to ORBIT from a game: ORBIT installs BOOT/ORBIT.ELF on your memory card; set it as FMCB's autoboot.
+- Back to NULD from a game: NULD installs BOOT/NULD.ELF on your memory card; set it as FMCB's autoboot.
+- Coming from ORBIT (v1.1 or older): the first boot moves mass0:/orbit/ to mass0:/nuld/, keeps BOOT/ORBIT.ELF
+  up to date (an FMCB autoboot pointing at it keeps working) and keeps using VMC/ORBIT.bin as the shared card.
 - Achievements: run the xeRAbora client v0.1.0-alpha.9, signed in, on your network
-  (github.com/hacan359/xerabora/releases/tag/v0.1.0-alpha.9: the version ORBIT is tested with).
+  (github.com/hacan359/xerabora/releases/tag/v0.1.0-alpha.9: the version NULD is tested with).
 - Games from a home server: see server/README.txt (wired network needed).
 
-Website and setup video: https://danielnuld.github.io/ps2-launcher/
-Source: https://github.com/danielnuld/ps2-launcher (GPL-3.0; the Neutrino fork is AFL-3.0)
+Website and setup video: https://danielnuld.github.io/nuld/
+Source: https://github.com/danielnuld/nuld (GPL-3.0; the Neutrino fork is AFL-3.0)
 """
 
-SERVER = """ORBIT game server (Linux)
+SERVER = """NULD game server (Linux)
 =========================
 
-Serves your ISOs to the PS2 over the network, with udpfs (Neutrino's) and ORBIT's catalog.
+Serves your ISOs to the PS2 over the network, with udpfs (Neutrino's) and NULD's catalog.
 
 1. Put the ISOs in <root>/DVD (and <root>/CD), e.g. /srv/data/ps2/DVD.
-2. Copy this folder to the server, e.g. ~/orbit, and install both services (user services):
+2. Copy this folder to the server, e.g. ~/nuld, and install both services (user services):
      mkdir -p ~/.config/systemd/user && cp *.service ~/.config/systemd/user/
      edit the --root in both if your folder is not /srv/data/ps2
-     systemctl --user daemon-reload && systemctl --user enable --now udpfs orbit-catalog
+     systemctl --user daemon-reload && systemctl --user enable --now udpfs nuld-catalog
      loginctl enable-linger $USER      (keep them running without a login)
 3. Allow UDP 62966 (udpfs) and TCP 18290 (catalog) in the firewall.
 4. On the PS2, config.ini:  [juegos] origen = usb, udpfs   and   servidor = <server IP>
 5. Use a cable: udpfs does not survive WiFi packet loss.
 
-orbit_hash is a static x86_64 Linux binary (the launcher's own ISO and memory-card code). orbit_catalog.py needs
+nuld_hash is a static x86_64 Linux binary (the launcher's own ISO and memory-card code). nuld_catalog.py needs
 only Python 3. curl http://<server>:18290/catalog lists what the PS2 will see.
 """
 
 UNITS = {
-    "orbit-catalog.service": """[Unit]
-Description=ORBIT game catalog for the PS2 launcher
+    "nuld-catalog.service": """[Unit]
+Description=NULD game catalog for the PS2 launcher
 After=network-online.target
 
 [Service]
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 %h/orbit/orbit_catalog.py --root /srv/data/ps2 --port 18290
+ExecStart=/usr/bin/python3 %h/nuld/nuld_catalog.py --root /srv/data/ps2 --port 18290
 Restart=always
 RestartSec=5
 
@@ -79,7 +81,7 @@ After=network-online.target
 
 [Service]
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 %h/orbit/udpfs_server.py --root-dir /srv/data/ps2
+ExecStart=/usr/bin/python3 %h/nuld/udpfs_server.py --root-dir /srv/data/ps2
 Restart=on-failure
 RestartSec=5
 
@@ -102,7 +104,7 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(info, s.replace("\n", "\r\n") if arc.endswith(".txt") else s, zipfile.ZIP_DEFLATED)
 
     add(os.path.join(ROOT, "launcher.elf"), "launcher.elf")
-    overlay = {"neutrino.elf", "modules/ee_core.elf"}  # ORBIT's fork over the official release
+    overlay = {"neutrino.elf", "modules/ee_core.elf"}  # NULD's fork over the official release
     for dirpath, _, files in os.walk(ndev):
         for f in files:
             rel = os.path.relpath(os.path.join(dirpath, f), ndev).replace("\\", "/")
@@ -114,8 +116,8 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
     text("DVD/put your PS2 DVD ISOs here.txt", "")
     text("CD/put your PS2 CD ISOs here.txt", "")
     add(os.path.join(ROOT, "tools", "covers.py"), "tools/covers.py", 0o755)
-    add(os.path.join(ROOT, "tools", "orbit_catalog.py"), "server/orbit_catalog.py", 0o755)
-    add(os.path.join(ROOT, "orbit_hash"), "server/orbit_hash", 0o755)
+    add(os.path.join(ROOT, "tools", "nuld_catalog.py"), "server/nuld_catalog.py", 0o755)
+    add(os.path.join(ROOT, "nuld_hash"), "server/nuld_hash", 0o755)
     add(udpfs, "server/udpfs_server.py", 0o755)
     for n, s in UNITS.items():
         text("server/" + n, s)
@@ -128,6 +130,6 @@ print(out, os.path.getsize(out), "bytes")
 print("launcher.elf SHA-256", hashlib.sha256(open(os.path.join(ROOT, "launcher.elf"), "rb").read()).hexdigest().upper())
 print("zip SHA-256", h)
 
-# self-update assets (#15): update.txt + update.sig + ORBIT's files, uploaded next to the zip
+# self-update assets (#15): update.txt + update.sig + NULD's files, uploaded next to the zip
 import subprocess
 subprocess.run([sys.executable, os.path.join(ROOT, "tools", "make_update.py"), ver], check=True)

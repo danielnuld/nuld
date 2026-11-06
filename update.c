@@ -1,4 +1,4 @@
-// Self-update (#15): the release's update.txt lists ORBIT's own files, each a loose release asset:
+// Self-update (#15): the release's update.txt lists NULD's own files, each a loose release asset:
 //   version = v1.1
 //   file = <asset> <path on the USB> <size> <sha256 hex>
 // update.sig is an ECDSA P-256 signature (DER, over SHA-256) of update.txt, made with the release key on the

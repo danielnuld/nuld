@@ -1,6 +1,6 @@
 # make            -> bench.elf
 # make APP=modetest -> modetest.elf
-# make APP=launcher -> launcher.elf (ORBIT: gfx.c + generated font_data.c, ui_data.c)
+# make APP=launcher -> launcher.elf (NULD: gfx.c, splash.c + generated logo_data.c, font_data.c, ui_data.c)
 # make APP=boot     -> boot.elf (memory-card stub that runs mass0:/launcher.elf; embedded in the launcher)
 # Jellyfin (jfplay.elf) lives in its own repo, danielnuld/orbit-jellyfin, installed as mass0:/APPS/Jellyfin
 APP ?= bench
@@ -8,7 +8,7 @@ SFX = splash move edge confirm panel # sfx/*.wav from tools/sfx.py -> SPU2 ADPCM
 EE_BIN = $(APP).elf
 IRX_FILES = iomanX fileXio sio2man mcman mcserv freepad libsd audsrv bdm bdmfs_fatfs usbd_mini usbmass_bd_mini $(if $(filter launcher,$(APP)),ps2dev9 netman smap ata_bd ps2hdd_bdm mx4sio_bd_mini iLinkman IEEE1394_bd_mini mmceman)
 # launcher extras: network for cover downloads (net.c); game sources, loaded per config.ini (sources.c, phase 14)
-EE_OBJS = $(APP).o iop.o $(if $(filter launcher,$(APP)),gfx.o iso.o ini.o net.o fmcb.o update.o achievements.o sources.o vmc.o cover.o icon.o combo.o font_data.o ui_data.o exec.o loader_elf.o boot_elf.o $(SFX:%=sfx_%.o)) $(if $(filter boot,$(APP)),exec.o loader_elf.o) $(IRX_FILES:=_irx.o)
+EE_OBJS = $(APP).o iop.o $(if $(filter launcher,$(APP)),gfx.o splash.o logo_data.o iso.o ini.o net.o fmcb.o update.o achievements.o sources.o vmc.o cover.o icon.o combo.o font_data.o ui_data.o exec.o loader_elf.o boot_elf.o $(SFX:%=sfx_%.o)) $(if $(filter boot,$(APP)),exec.o loader_elf.o) $(IRX_FILES:=_irx.o)
 EE_LIBS = $(if $(filter launcher,$(APP)),-L$(PS2SDK)/ports/lib -lwolfssl -ljpeg -lnetman -lps2ip -Xlinker --wrap=open -Xlinker --wrap=read) $(if $(filter boot,$(APP)),-ldebug) -laudsrv -lcdvd -lmc -lfont -lpacket -ldma -lgraph -ldraw -lpad -lfileXio -lpatches -lc
 EE_INCS += -I$(PS2SDK)/ports/include # wolfssl, jpeglib (ps2sdk ports)
 EE_CFLAGS += -MMD -MP # .d files: editing a header rebuilds its users (v1.0 shipped a stale gfx.o)
@@ -48,11 +48,11 @@ test:
 	cc -std=gnu99 -Wall -DSELFTEST icon.c -lm -o /tmp/icon_selftest && /tmp/icon_selftest $(ICON_CHECK)
 	cc -std=gnu99 -Wall -DSELFTEST -Dmain=gfx_main -c gfx.c -o /tmp/gfx_host.o && cc -std=gnu99 -Wall -DSELFTEST cover.c /tmp/gfx_host.o font_data.c -ljpeg -lm -o /tmp/cover_selftest && /tmp/cover_selftest $(COVER_CHECK)
 
-orbit_hash: tools/orbit_hash.c achievements.c iso.c vmc.c # the game server's helper (phase 17), static: nuld has no compiler
-	cc -std=gnu99 -O2 -Wall -Wno-deprecated-declarations -DSELFTEST -DSELFTEST_LIB -DORBIT_HASH -static $^ -lcrypto -lpthread -o $@
+nuld_hash: tools/nuld_hash.c achievements.c iso.c vmc.c # the game server's helper (phase 17), static: nuld has no compiler
+	cc -std=gnu99 -O2 -Wall -Wno-deprecated-declarations -DSELFTEST -DSELFTEST_LIB -DNULD_HASH -static $^ -lcrypto -lpthread -o $@
 
 clean:
-	rm -f *.elf *.o *.d *_irx.c sfx_*.c *.adp loader_elf.c boot_elf.c orbit_hash
+	rm -f *.elf *.o *.d *_irx.c sfx_*.c *.adp loader_elf.c boot_elf.c nuld_hash
 	$(MAKE) -C loader clean
 
 include $(PS2SDK)/samples/Makefile.pref

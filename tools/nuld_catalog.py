@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""orbit-catalog: the game server's list of PS2 games for the ORBIT launcher (phase 17).
+"""nuld-catalog: the game server's list of PS2 games for the NULD launcher (phase 17).
 
 GET  /catalog        one line per ISO under <root>/DVD and <root>/CD, tab-separated:
                      path  size  serial  hash  title   (serial SLUS_213.76 form, hash = rcheevos rc_hash_ps2,
                      "-" while not hashed yet or unreadable). Answered from the cache, never waiting for a hash:
-                     a background thread hashes new or changed ISOs (key: path, size, mtime) with orbit_hash.
+                     a background thread hashes new or changed ISOs (key: path, size, mtime) with nuld_hash.
 POST /vmc/<name>     creates <root>/VMC/<name>.bin (empty 8 MB card, the launcher's format) if missing.
 
-Runs as a user service on nuld next to udpfs_server.py: tools/orbit_catalog.py --root /srv/data/ps2 --port 18290
+Runs as a user service on nuld next to udpfs_server.py: tools/nuld_catalog.py --root /srv/data/ps2 --port 18290
 """
 import argparse, json, os, re, subprocess, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -72,6 +72,9 @@ class Catalog:
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", name) or name.startswith("."):
             return 400
         path = os.path.join(self.root, "VMC", name + ".bin")
+        old = os.path.join(self.root, "VMC", "ORBIT.bin")  # the shared card's name until v1.1
+        if name == "NULD" and not os.path.exists(path) and os.path.exists(old):
+            os.replace(old, path)
         if os.path.exists(path):
             if os.path.getsize(path) == 8 * 1024 * 1024:
                 return 200
@@ -85,8 +88,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="/srv/data/ps2")
     ap.add_argument("--port", type=int, default=18290)
-    ap.add_argument("--tool", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "orbit_hash"))
-    ap.add_argument("--cache", default=os.path.expanduser("~/.cache/orbit-catalog.json"))
+    ap.add_argument("--tool", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "nuld_hash"))
+    ap.add_argument("--cache", default=os.path.expanduser("~/.cache/nuld-catalog.json"))
     ap.add_argument("--rescan", type=int, default=60, help="seconds between scans for new ISOs")
     a = ap.parse_args()
     os.makedirs(os.path.dirname(a.cache), exist_ok=True)

@@ -86,8 +86,8 @@ static const u8 labels[2][M_ITEMS][10] = { // eec.IgrLang: the launcher's [ui] i
 };
 #define label labels[eec.IgrLang ? 1 : 0]
 
-// ORBIT colours (R, G, B): panel, border, item, selected item
-static const u8 rgb[4][3] = {{14, 18, 38}, {86, 110, 176}, {120, 132, 168}, {236, 240, 255}};
+// NULD colours (R, G, B): panel, border (the acid accent), item, selected item
+static const u8 rgb[4][3] = {{12, 14, 18}, {200, 255, 46}, {138, 145, 156}, {230, 232, 236}};
 enum { C_PANEL, C_BORDER, C_ITEM, C_SEL };
 
 static int bpp; // bytes per pixel of the shown frame: 4 (CT32), 3 (CT24), 2 (CT16 / CT16S)
