@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NULD manual</title>
+<meta name="description" content="How to install and set up NULD, the PlayStation 2 game launcher: the USB drive, the buttons, config.ini, covers, achievements, the home game server and every game source.">
+<meta name="theme-color" content="#E6E8EC">
+<link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="site.css">
+<script src="splash.js" defer></script>
+<script src="release.js" defer></script>
+</head>
+<body class="paper">
+<div class="wrap">
+  <nav class="runhead" aria-label="Manual">
+    <a href="./">NULD instruction manual, <span data-version="version {v}">version 1.2</span></a>
+    <a href="#usb">1 The USB drive</a>
+    <a href="#buttons">2 Buttons</a>
+    <a href="#config">3 config.ini</a>
+    <a href="#server">8 Home server</a>
+    <a href="#help">11 Troubleshooting</a>
+  </nav>
+
+  <header class="cover">
+    <div>
+      <div class="logo">
+        <svg width="88" height="88" viewBox="0 0 88 88" aria-hidden="true"><circle cx="44" cy="44" r="36" fill="none" stroke="#06070A" stroke-width="11"/><line x1="3" y1="85" x2="85" y2="3" stroke="#06070A" stroke-width="11"/><line x1="3" y1="85" x2="85" y2="3" stroke="#C8FF2E" stroke-width="5"/></svg>
+        <span>NULD</span>
+      </div>
+      <h1>A game launcher that runs on the PlayStation&nbsp;2 and does its own <span class="mark">homework</span>.</h1>
+    </div>
+    <p>Everything NULD can do, and how to turn it on. You need a PS2 that runs homebrew (FreeMcBoot or similar) and a USB drive. <br><br><a class="btn ink" href="https://github.com/danielnuld/nuld/releases/latest" data-zip data-version="Download v{v}">Download</a></p>
+    <figure class="fig">
+      <div class="frame"><canvas data-nuld-splash data-version="1.2" role="img" aria-label="NULD's loading screen, animated: a wire sphere over a perspective floor and the four logo variants taking turns"></canvas></div>
+      <figcaption>Fig. 1, the loading screen at every boot, while the console starts the USB, reads the memory cards and loads the covers.</figcaption>
+    </figure>
+  </header>
+
+  <section class="chapter" id="usb">
+    <header><b>1</b><h2>The USB drive</h2></header>
+    <div>
+      <p>Copy the zip's contents to the root of the drive, put your ISOs in <code>DVD/</code> (CD games in <code>CD/</code>) and start <code>mass0:/launcher.elf</code> from uLaunchELF. The setup wizard opens on the first boot.</p>
+<pre>USB root
+├── launcher.elf
+├── neutrino/     the loader, with NULD's in-game menu and achievements agent
+├── DVD/          PS2 DVD ISOs
+├── CD/           PS2 CD ISOs
+├── POPS/         PS1 games (POPStarter .VCD), optional
+├── APPS/         homebrew .ELF files, optional
+├── covers/       written by NULD: the covers it downloads
+└── nuld/         written by NULD: config.ini, juegos.ini, estado.ini</pre>
+      <p>FAT32 cannot hold files over 4 GB: format the drive as exFAT for big ISOs. Virtual memory cards live in <code>VMC/</code> on the game's own device.</p>
+    </div>
+  </section>
+
+  <section class="chapter" id="buttons">
+    <header><b>2</b><h2>Buttons</h2></header>
+    <div>
+      <figure class="fig" style="margin: 0 0 28px">
+        <div class="frame"><img src="img/home-carousel.jpg" alt="Carousel view: Beyond Good and Evil selected, its tags at the top and the button hints at the bottom" width="1280" height="720" loading="lazy"></div>
+        <figcaption>Fig. 2, the home screen. The hints at the bottom right change with what the selected game allows.</figcaption>
+      </figure>
+      <div class="scroll"><table>
+        <tr><td>← → ↑ ↓</td><td>Move through the library</td></tr>
+        <tr><td>L1 / R1</td><td>Filter: all, PS2, PS1, apps</td></tr>
+        <tr><td>□</td><td>Change view: carousel, grid, list</td></tr>
+        <tr><td>△</td><td>Per-game options: video mode, compatibility, memory card</td></tr>
+        <tr><td>○</td><td>The game's achievements, when it has a set</td></tr>
+        <tr><td>✕</td><td>Play</td></tr>
+        <tr><td>START</td><td>The setup wizard</td></tr>
+        <tr><td>SELECT</td><td>Status: each game source (games found, or why it failed), the network, frame times</td></tr>
+        <tr><td>L2 + R2</td><td>Switch the menu between 720p and 480i for a CRT TV. It works blind, and is remembered</td></tr>
+      </table></div>
+    </div>
+  </section>
+
+  <section class="chapter" id="config">
+    <header><b>3</b><h2>config.ini</h2></header>
+    <div>
+      <p>NULD writes <code>mass0:/nuld/config.ini</code> on its first boot, and the setup wizard (START) edits the main keys for you. Each key is explained in the file. The main ones:</p>
+      <div class="scroll"><table>
+        <tr><th>Section and key</th><th>Values</th><th>What it does</th></tr>
+        <tr><td>[ui] idioma</td><td>es, en</td><td>Language of the menus and of the file's comments</td></tr>
+        <tr><td>[juegos] origen</td><td>usb, hdd, mx4sio, ilink, mmce, udpbd, udpfs</td><td>Where to look for games, comma-separated</td></tr>
+        <tr><td>[juegos] servidor</td><td>an IP</td><td>The home game server (udpfs)</td></tr>
+        <tr><td>[memorycard] modo</td><td>juego, compartida, fisica</td><td>A virtual card per game, one shared, or the physical one</td></tr>
+        <tr><td>[video] modo</td><td>nativo, 480p, 1080i</td><td>Video mode of the games</td></tr>
+        <tr><td>[video] pantalla</td><td>720p, 480i</td><td>The menu's own output; 480i for a CRT</td></tr>
+        <tr><td>[red] ip</td><td>dhcp or an IP</td><td>DHCP, or a fixed IP with mascara, puerta and dns</td></tr>
+        <tr><td>[portadas] descargar</td><td>si, no</td><td>Download missing covers at boot</td></tr>
+        <tr><td>[logros] activos</td><td>si, no</td><td>RetroAchievements through the xeRAbora client</td></tr>
+        <tr><td>[actualizaciones] buscar</td><td>si, no</td><td>Look for a new NULD release at boot</td></tr>
+        <tr><td>[igr] menu</td><td>a button combo</td><td>The in-game menu's combo; also reiniciar and apagar</td></tr>
+      </table></div>
+    </div>
+  </section>
+
+  <section class="chapter" id="covers">
+    <header><b>4</b><h2>Covers</h2></header>
+    <div>
+      <p>Plug in the network cable (built in on slim PS2s, the network adapter on fat ones). At boot NULD downloads the covers it is missing from xlenore/ps2-covers and keeps them on the USB, so later boots work offline.</p>
+      <p>Your own covers: <code>tools/covers.py</code> in the zip turns PNG or JPG files named by serial (<code>SLUS-21376.png</code>) into the pair of files for <code>mass0:/covers/</code>.</p>
+    </div>
+  </section>
+
+  <section class="chapter" id="back">
+    <header><b>5</b><h2>Back from a game</h2></header>
+    <div>
+      <p>NULD installs <code>BOOT/NULD.ELF</code> on your memory card, and the setup wizard can set FreeMcBoot to start it (autoboot, a button, or an item in FMCB's menu). Then <b>Restart</b> in the in-game menu (L1+L2+R1+R2+START+SELECT) reboots the console straight into NULD. L1+L2+R1+R2+L3+R3 powers it off.</p>
+    </div>
+  </section>
+
+  <section class="chapter" id="options">
+    <header><b>6</b><h2>Per-game options</h2></header>
+    <div>
+      <figure class="fig" style="margin: 0 0 28px">
+        <div class="frame"><img src="img/options.jpg" alt="Per-game options panel over the dimmed home screen" width="1280" height="720" loading="lazy"></div>
+        <figcaption>Fig. 3, △ on a PS2 game.</figcaption>
+      </figure>
+      <p>Video mode (480p or 1080i, forced), Neutrino's compatibility modes for games that need them, and the memory card: the game's own, the shared one or the physical one. The choices are saved in <code>nuld/juegos.ini</code>.</p>
+    </div>
+  </section>
+
+  <section class="chapter" id="achievements">
+    <header><b>7</b><h2>RetroAchievements</h2></header>
+    <div>
+      <ol>
+        <li>On a PC or server on your network, run the <a href="https://github.com/hacan359/xerabora/releases/tag/v0.1.0-alpha.9">xeRAbora v0.1.0-alpha.9</a> client and sign in to your RetroAchievements account.</li>
+        <li>On the PS2, keep <code>[logros] activos = si</code>. Leave <code>servidor</code> empty to find the client on the network, or set its IP.</li>
+        <li>Games with a set show the achievements tag, and ○ lists them with your progress. Press ✕ any time: NULD does not wait for the answer.</li>
+        <li>While you play, the agent inside the game sends its memory to the client, which unlocks achievements on your profile.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="chapter" id="server">
+    <header><b>8</b><h2>Home game server</h2></header>
+    <div>
+      <p>Keep your ISOs on a Linux machine and play them over the cable. The zip's <code>server/</code> folder has everything:</p>
+<pre># on the server, with the ISOs in /srv/data/ps2/DVD
+cp -r server ~/nuld &amp;&amp; cd ~/nuld
+mkdir -p ~/.config/systemd/user &amp;&amp; cp *.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now udpfs nuld-catalog
+loginctl enable-linger $USER
+curl http://localhost:18290/catalog      # what the PS2 will see</pre>
+      <p>Allow UDP 62966 and TCP 18290 in the firewall. On the PS2: <code>[juegos] origen = usb, udpfs</code> and <code>servidor = &lt;server IP&gt;</code>. Use a cable on both ends: udpfs does not survive WiFi packet loss.</p>
+    </div>
+  </section>
+
+  <section class="chapter" id="sources">
+    <header><b>9</b><h2>Other sources</h2></header>
+    <div>
+      <p>Add them to <code>origen</code>, or tick them in the setup wizard: <code>hdd</code> (internal exFAT disk, or HD Loader partitions), <code>mx4sio</code>, <code>ilink</code>, <code>mmce</code> (not together with mx4sio), <code>udpbd</code> (needs a fixed IP in <code>[red]</code>). NULD can also run from an MMCE's SD card with no USB drive at all.</p>
+      <p>A MemCard PRO 2 or SD2PSX switches to the game's own card when a game starts, whatever its source. To save there instead of a virtual card, set the game's memory card to <code>fisica</code> with △.</p>
+    </div>
+  </section>
+
+  <section class="chapter" id="updates">
+    <header><b>10</b><h2>Updates</h2></header>
+    <div>
+      <p>With the cable in, NULD looks for a newer release at boot and says so; START installs it. Every file is checked against a manifest signed with the release key before anything is replaced, and the old files stay as <code>.old</code>.</p>
+      <p>Coming from ORBIT (v1.1 or older): the first boot moves <code>orbit/</code> to <code>nuld/</code>, keeps <code>BOOT/ORBIT.ELF</code> up to date next to the new <code>BOOT/NULD.ELF</code>, and keeps using <code>VMC/ORBIT.bin</code> as the shared card.</p>
+    </div>
+  </section>
+
+  <section class="chapter" id="help" style="border-bottom: 0">
+    <header><b>11</b><h2>Troubleshooting</h2></header>
+    <div>
+      <ul>
+        <li><b>No covers</b>: check the cable and <code>[portadas] descargar = si</code>. The line after the loading screen says which step failed; for "no DNS", set <code>[red] dns = 1.1.1.1</code>.</li>
+        <li><b>A source shows no games</b>: SELECT lists every source and why it failed.</li>
+        <li><b>"Achievements: no server"</b>: the xeRAbora client did not answer; set its IP in <code>[logros] servidor</code>.</li>
+        <li><b>Black screen with a game</b>: try 480p instead of nativo with △, or a compatibility mode.</li>
+        <li><b>Black screen on a CRT</b>: press L2+R2 together for 480i.</li>
+        <li><b>Logs</b>: <code>mass0:/launcher.txt</code> records each launch.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer class="site">
+    <span>NULD is free software under GPL-3.0 and ships a fork of Neutrino (AFL-3.0). Called ORBIT until v1.1.</span>
+    <span>PlayStation is a trademark of Sony Interactive Entertainment. NULD is not affiliated with Sony.</span>
+  </footer>
+</div>
+</body>
+</html>
