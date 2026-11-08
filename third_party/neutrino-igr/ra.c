@@ -39,7 +39,7 @@ void RA_OnVblank(void) // interrupt context: no waiting
         return;
     // the last copy still runs, or the game's own SIF1 chain does (scene loads): skip, never wait. Joining the
     // game's chain from this handler froze Tekken 5 at scene loads (2026-11-07)
-    if ((dma_id != 0 && isceSifDmaStat(dma_id) >= 0) || (*(volatile u32 *)0x1000C000 & 0x100)) { // D6_CHCR.STR
+    if ((dma_id != 0 && isceSifDmaStat(dma_id) >= 0) || (*(volatile u32 *)0x1000C400 & 0x100)) { // D6_CHCR.STR (SIF1; 0x1000C000 is SIF0, always running)
         skip++;
         return;
     }
