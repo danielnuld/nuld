@@ -36,7 +36,7 @@
 #include "update.h"
 #include "splash.h"
 
-#define NULD_VERSION "v1.2.11" // tools/make_release.py checks it against the release tag
+#define NULD_VERSION "v1.2.12" // tools/make_release.py checks it against the release tag
 #include "lang.h"
 #include "achievements.h"
 #include "third_party/neutrino-igr/raagent/ra_watch.h"
@@ -658,7 +658,7 @@ static int catalog_load(int s, int n)
 			serial_dash(e.serial, c->serial);
 			if (strlen(e.hash) == 32) snprintf(c->hash, sizeof(c->hash), "%s", e.hash);
 			c->kind = K_PS2, c->cd = !strncmp(e.path, "CD/", 3), c->src = s;
-			done_n++, got++;
+			done_n++, total_n++, got++; // the server's games are known only now: the splash's total grows with them
 		}
 	}
 	free(buf);
@@ -678,7 +678,7 @@ static void hdl_add(void *p, const char *part, const char *title, const char *st
 	snprintf(e->title, sizeof(e->title), "%s", *title ? title : part);
 	serial_dash(startup, e->serial);
 	e->kind = K_PS2, e->src = c->s;
-	done_n++;
+	done_n++, total_n++; // as the catalog: not counted beforehand
 }
 
 static int by_title(const void *a, const void *b) // then by source
@@ -1409,7 +1409,7 @@ static void splash(int t, float fade)
 	shown += (goal - shown) * 0.08f;
 	if (stage == 0) snprintf(st, sizeof(st), L("Iniciando USB", "Starting USB"));
 	else if (stage == 1) snprintf(st, sizeof(st), L("Leyendo memory cards", "Reading memory cards"));
-	else snprintf(st, sizeof(st), L("Cargando portadas  %02d / %02d", "Loading covers  %02d / %02d"), done_n, total_n);
+	else snprintf(st, sizeof(st), L("Cargando juegos  %02d / %02d", "Loading games  %02d / %02d"), done_n, total_n);
 	splash_msg(st);
 	gfx_begin();
 	splash_draw(t / 60.f);
