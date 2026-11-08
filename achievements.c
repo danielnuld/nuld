@@ -244,10 +244,10 @@ static int raq(const char *server, const char *hash, const char *serial, int *by
 	char msg[128], r[256];
 	struct sockaddr_in from;
 	snprintf(msg, sizeof(msg), "RAQ1 %s %s %s %d", hash, serial, ra_me, RA_PORT);
-	for (int t = 0; t < 20 && !ra_abort; t++) { // WAIT: the client is loading the set from RetroAchievements (seconds)
+	for (int t = 0; t < 100 && !ra_abort; t++) { // WAIT: the client is loading the set from RetroAchievements (seconds)
 		if (ask(&srv, msg, "RAA1", r, sizeof(r), &from) < 0) continue;
 		if (!strncmp(r, "RAA1 NO", 7)) return RA_NOSET;
-		if (strncmp(r, "RAA1 OK", 7)) { sleep(1); continue; } // WAIT
+		if (strncmp(r, "RAA1 OK", 7)) { usleep(200000); continue; } // WAIT: asked again 5 times a second
 		int unlocked, unsupported, at = 0; // "RAA1 OK <bytes> <chunks> <total> <unlocked> <unsup> <title>"
 		*count = 0, *title = 0;
 		if (sscanf(r + 7, "%d %d %d %d %d %n", bytes, chunks, count, &unlocked, &unsupported, &at) >= 3 && at)

@@ -36,7 +36,7 @@
 #include "update.h"
 #include "splash.h"
 
-#define NULD_VERSION "v1.2.7" // tools/make_release.py checks it against the release tag
+#define NULD_VERSION "v1.2.8" // tools/make_release.py checks it against the release tag
 #include "lang.h"
 #include "achievements.h"
 #include "third_party/neutrino-igr/raagent/ra_watch.h"
@@ -441,6 +441,7 @@ static void *load_c16(const char *path, unsigned w, unsigned h) // header check 
 	FILE *f = fopen(path, "rb");
 	unsigned hdr[4];
 	void *pix = NULL;
+	if (f) setvbuf(f, NULL, _IONBF, 0); // unbuffered: fread goes to the USB in one request, not 1 KB at a time
 	if (f && fread(hdr, 16, 1, f) == 1 && !memcmp(hdr, "C16", 4) && hdr[1] == w && hdr[2] == h) {
 		pix = memalign(64, w * h * 2);
 		if (pix && fread(pix, w * h * 2, 1, f) != 1) { free(pix); pix = NULL; }
@@ -1055,6 +1056,7 @@ static int save_c16(const char *serial, const char *suffix, const void *px, unsi
 	memcpy(hdr, "C16", 4);
 	snprintf(path, sizeof(path), "%s/covers/%s%s.c16", homedev, serial, suffix);
 	FILE *f = fopen(path, "wb");
+	if (f) setvbuf(f, NULL, _IONBF, 0); // as load_c16
 	int ok = f && fwrite(hdr, 16, 1, f) == 1 && fwrite(px, w * h * 2, 1, f) == 1;
 	if (f) ok &= fclose(f) == 0;
 	if (!ok) remove(path); // load_c16 would skip a short file anyway; keep the USB clean
@@ -1359,10 +1361,12 @@ static void loader(void *arg) // lower priority than the render thread: runs whi
 	                   .initial_priority = 0x40 };
 	if ((disc_tid = CreateThread(&dt)) >= 0) StartThread(disc_tid, NULL);
 	if (usb) download_covers(); // the home screen is already up: covers pop in as they arrive
-	if (usb) update_check();
+	int upd_left = usb; // the update check's HTTPS takes seconds: an achievements query waiting goes first
+	if (upd_left && ra_sema < 0) upd_left = 0, update_check();
 	if (ra_sema >= 0) ra_log("ra: worker up, covers state %d", dl_state);
 	while (ra_sema >= 0) { // achievements: woken by the render thread on a selection (phase 16)
-		WaitSema(ra_sema);
+		if (!upd_left) WaitSema(ra_sema);
+		else if (PollSema(ra_sema) < 0) { upd_left = 0, update_check(); continue; } // nothing asked: check now
 		int l = ra_list_want; // the Logros panel first: the user is looking at it
 		if (l >= 0 && !ra_abort && !ra_launching) ra_list_want = -1, ra_busy = 1, ra_load_list(l), ra_busy = 0;
 		int i = ra_want;
