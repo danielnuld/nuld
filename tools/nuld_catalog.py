@@ -6,10 +6,13 @@ GET  /catalog        one line per ISO under <root>/DVD and <root>/CD, tab-separa
                      "-" while not hashed yet or unreadable). Answered from the cache, never waiting for a hash:
                      a background thread hashes new or changed ISOs (key: path, size, mtime) with nuld_hash.
 POST /vmc/<name>     creates <root>/VMC/<name>.bin (empty 8 MB card, the launcher's format) if missing.
+GET  /vmc/<name>/list               the card's root, one "name<TAB>mode<TAB>modified hex" line per entry
+GET  /vmc/<name>/file/<dir>/<file>  one file of a save (the launcher's save icon, phase 20)
 
 Runs as a user service on nuld next to udpfs_server.py: tools/nuld_catalog.py --root /srv/data/ps2 --port 18290
 """
 import argparse, json, os, re, subprocess, threading, time
+from urllib.parse import unquote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 OPL_PREFIX = re.compile(r"^[A-Z]{4}_\d{3}\.\d{2}\.")  # "SLUS_209.46.God of War.iso" (OPL naming)
@@ -68,6 +71,18 @@ class Catalog:
                 json.dump(self.cache, open(tmp, "w"))
                 os.replace(tmp, self.cache_path)
 
+    def vmc_get(self, path):  # (status, bytes) for GET /vmc/<name>/list or /vmc/<name>/file/<dir>/<file>
+        m = re.fullmatch(r"/vmc/([A-Za-z0-9_.-]+)/(list|file/([^/]+)/([^/]+))", path)
+        if not m or ".." in path:
+            return 404, b""
+        card = os.path.join(self.root, "VMC", m.group(1) + ".bin")
+        if not os.path.exists(card):
+            return 404, b""
+        args = ["vmc-list", card] if m.group(2) == "list" else \
+            ["vmc-read", card, unquote(m.group(3)) + "/" + unquote(m.group(4))]
+        r = subprocess.run([self.tool] + args, capture_output=True)
+        return (200, r.stdout) if r.returncode == 0 else (404, b"")
+
     def vmc(self, name):
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", name) or name.startswith("."):
             return 400
@@ -115,7 +130,10 @@ def main():
             self.wfile.write(body)
 
         def do_GET(self):
-            self.send(200, cat.text().encode()) if self.path == "/catalog" else self.send(404)
+            if self.path == "/catalog":
+                self.send(200, cat.text().encode())
+            else:
+                self.send(*cat.vmc_get(self.path))
 
         def do_POST(self):
             m = re.fullmatch(r"/vmc/([^/]+)", self.path)

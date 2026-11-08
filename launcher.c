@@ -36,7 +36,7 @@
 #include "update.h"
 #include "splash.h"
 
-#define NULD_VERSION "v1.2.5" // tools/make_release.py checks it against the release tag
+#define NULD_VERSION "v1.2.6" // tools/make_release.py checks it against the release tag
 #include "lang.h"
 #include "achievements.h"
 #include "third_party/neutrino-igr/raagent/ra_watch.h"
@@ -181,13 +181,49 @@ static void vmc_file(int i, char *out, int n) // the launcher's path to it
 static int udpfs_cat; // [juegos] servidor set: udpfs games come from its catalog (phase 17), else udpfs is mounted (#10)
 static int on_catalog(int i) { return src[(int)cv[i].src].type == SRC_UDPFS && udpfs_cat; }
 
+static int net_res;
+static ini cfg; // tentative: defined with the config below
+static void *vmc_remote(int i, const char *what, int *size) // icon thread: GET /vmc/<card>/<what> from the catalog
+{
+	char name[40], path[160], *buf = net_res == 0 ? malloc(256 << 10) : NULL, *out = NULL; // network up at boot
+	int body, len;
+	vmc_name(i, name, sizeof(name)); // "VMC/<serial>.bin"
+	snprintf(path, sizeof(path), "/vmc/%.*s/%s", (int)strlen(name) - 8, name + 4, what);
+	for (char *s = path; *s; s++)
+		if (*s == ' ') memmove(s + 3, s + 1, strlen(s)), memcpy(s, "%20", 3); // save names may hold spaces
+	if (buf && http_get(ini_get(&cfg, "juegos", "servidor", ""), 18290, path, buf, 256 << 10, &body, &len) == 200 &&
+	    (out = memalign(64, len + 1)))
+		memcpy(out, buf + body, len), out[len] = 0, *size = len;
+	free(buf);
+	return out;
+}
+
 static void vmc_load(int i) // icon thread
 {
 	static vmc_ent e[MAXDIR];
-	if (on_catalog(i)) { vdir[i] = NULL, vmc_n[i] = 0; return; } // on the server: not read (phase 17)
 	char path[64];
-	vmc_file(i, path, sizeof(path));
-	int n = vmc_list(path, e, MAXDIR);
+	int n = 0;
+	if (on_catalog(i)) { // on the server: its catalog lists the card (phase 20; phase 17 did not read it)
+		char *t = vmc_remote(i, "list", &n), *l = t, *nl;
+		for (n = 0; l && *l && n < MAXDIR; l = nl ? nl + 1 : l + strlen(l)) {
+			if ((nl = strchr(l, '\n'))) *nl = 0;
+			char *tab = strchr(l, '\t');
+			unsigned mode, b[8];
+			if (!tab || tab - l > 32 || sscanf(tab + 1, "%u\t%2x%2x%2x%2x%2x%2x%2x%2x", &mode, &b[0], &b[1], &b[2], &b[3],
+			                                   &b[4], &b[5], &b[6], &b[7]) != 9)
+				continue;
+			memset(&e[n], 0, sizeof(e[n]));
+			memcpy(e[n].name, l, tab - l);
+			e[n].mode = mode;
+			for (int k = 0; k < 8; k++) e[n].modified[k] = b[k];
+			n++;
+		}
+		free(t);
+		snprintf(path, sizeof(path), "server");
+	} else {
+		vmc_file(i, path, sizeof(path));
+		n = vmc_list(path, e, MAXDIR);
+	}
 	sceMcTblGetDir *d = n > 0 ? calloc(n, sizeof(sceMcTblGetDir)) : NULL;
 	for (int k = 0; d && k < n; k++) {
 		memcpy(d[k].EntryName, e[k].name, 32);
@@ -284,6 +320,7 @@ static void *save_read(int i, int port, const char *dir, const char *file, int *
 {
 	char path[128], card[64];
 	if (port < 2) return snprintf(path, sizeof(path), "/%s/%s", dir, file), mc_read(port, path, size);
+	if (on_catalog(i)) return snprintf(path, sizeof(path), "file/%s/%s", dir, file), vmc_remote(i, path, size);
 	vmc_file(i, card, sizeof(card));
 	snprintf(path, sizeof(path), "%s/%s", dir, file);
 	return vmc_read(card, path, size);
@@ -1021,7 +1058,7 @@ static int save_c16(const char *serial, const char *suffix, const void *px, unsi
 	return ok;
 }
 
-static int net_res = 1; // net_ready's result, for the log; 1: not tried
+static int net_res = 1; // net_ready's result, for the log; 1: not tried (declared above vmc_remote)
 static int net_ready(void) // loader thread: the network up once, for the covers and the achievements; 0 or NET_ERR_*
 {
 	int r = net_res;
