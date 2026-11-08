@@ -194,6 +194,18 @@ void net_down(void)
 	NetManDeinit();
 }
 
+static int tls_recv(WOLFSSL *ssl, char *b, int sz, void *ctx) // wolfSSL's reads: 8 s of silence and it gives up
+{
+	(void)ssl;
+	for (int ms = 0; ms < 8000; ms += 20) {
+		int r = recv(*(int *)ctx, b, sz, 0x08); // lwIP's MSG_DONTWAIT (see http_req)
+		if (r > 0) return r;
+		if (r == 0) return WOLFSSL_CBIO_ERR_CONN_CLOSE;
+		usleep(20000);
+	}
+	return WOLFSSL_CBIO_ERR_TIMEOUT;
+}
+
 int https_get(const char *host, const char *path, char *buf, int max, int *body, int *len)
 {
 	static WOLFSSL_CTX *ctx;
@@ -214,13 +226,13 @@ int https_get(const char *host, const char *path, char *buf, int max, int *body,
 	                    inet_ntoa(((struct sockaddr_in *)ai->ai_addr)->sin_addr), errno);
 	freeaddrinfo(ai);
 	if (r < 0) { if (s >= 0) close(s); return NET_ERR_CONNECT; }
-	struct timeval tv = {15, 0}; // a stalled server must not hang the download thread forever
-	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	WOLFSSL *ssl = wolfSSL_new(ctx);
 	int st = NET_ERR_TLS, n = snprintf(buf, max, "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: ORBIT\r\nConnection: close\r\n\r\n", path, host);
+	snprintf(net_why, sizeof(net_why), "tls %.40s", host); // left as is if the handshake fails or times out
 	if (ssl && wolfSSL_UseSNI(ssl, WOLFSSL_SNI_HOST_NAME, host, strlen(host)) == WOLFSSL_SUCCESS &&
-	    wolfSSL_set_fd(ssl, s) == WOLFSSL_SUCCESS && wolfSSL_connect(ssl) == WOLFSSL_SUCCESS &&
-	    wolfSSL_write(ssl, buf, n) == n) {
+	    wolfSSL_set_fd(ssl, s) == WOLFSSL_SUCCESS && (wolfSSL_SSLSetIORecv(ssl, tls_recv), wolfSSL_SetIOReadCtx(ssl, &s), 1) &&
+	    wolfSSL_connect(ssl) == WOLFSSL_SUCCESS && wolfSSL_write(ssl, buf, n) == n) {
+		snprintf(net_why, sizeof(net_why), "read %.40s", host);
 		for (n = net_got = 0; n < max && (r = wolfSSL_read(ssl, buf + n, max - n)) > 0;) net_got = n += r;
 		int clen;
 		st = NET_ERR_PROTO;
@@ -231,6 +243,7 @@ int https_get(const char *host, const char *path, char *buf, int max, int *body,
 	}
 	if (ssl) wolfSSL_shutdown(ssl), wolfSSL_free(ssl);
 	close(s);
+	if (st == 200) net_why[0] = 0;
 	return st;
 }
 
