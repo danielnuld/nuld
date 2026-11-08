@@ -36,7 +36,7 @@
 #include "update.h"
 #include "splash.h"
 
-#define NULD_VERSION "v1.2.4" // tools/make_release.py checks it against the release tag
+#define NULD_VERSION "v1.2.5" // tools/make_release.py checks it against the release tag
 #include "lang.h"
 #include "achievements.h"
 #include "third_party/neutrino-igr/raagent/ra_watch.h"
@@ -1162,11 +1162,47 @@ static void ra_load_list(int i) // worker: game id from RetroAchievements (HTTPS
 // phase 16b, at launch (render thread, worker stopped, network still up): the game's watch list to
 // mass0:/nuld/ra/<serial>.wl and Neutrino's extra config mass0:/neutrino/config/ra.toml, which loads smap,
 // ministack (no DHCP: the IP the launcher has now) and the agent into the game; arg gets "-ra=<list>". 0: none
+// phase 19: the titles of the achievements still to earn, for the in-game unlock notice: appended to the watch list
+// as RA_TITLES entries of {id, title}, then {count, "RATL"}; Neutrino's loader copies them next to the snapshot buffer
+#define RA_TITLES 128
+#define RA_TITLE 28 // with its NUL; ee_core's font has 0x20-0x5f only: upper case, accents dropped, the rest '?'
+static int ra_titles(int i, unsigned char *out)
+{
+	if (ra_list_for != i || ra_list_st != 2) ra_list_for = i, ra_load_list(i); // not opened on ○: ask now
+	int k = 0;
+	for (int a = 0; a < ra_list_n && k < RA_TITLES; a++) {
+		if (ra_list[a].earned || ra_list[a].id <= 0) continue;
+		unsigned char *e = out + k++ * (4 + RA_TITLE);
+		memcpy(e, &ra_list[a].id, 4);
+		char *t = (char *)e + 4;
+		int m = 0;
+		for (const unsigned char *s = (const unsigned char *)ra_list[a].title; *s && m < RA_TITLE - 1; s++) {
+			unsigned c = *s;
+			if (c == 0xC3 && s[1]) { // Latin-1 letters in UTF-8: the base letter
+				unsigned d = *++s | 0x20;
+				c = d >= 0xA0 && d <= 0xA5 ? 'A' : d >= 0xA8 && d <= 0xAB ? 'E' : d >= 0xAC && d <= 0xAF ? 'I'
+				  : d >= 0xB2 && d <= 0xB6 ? 'O' : d >= 0xB9 && d <= 0xBC ? 'U' : d == 0xB1 ? 'N' : '?';
+			} else if (c >= 0x80) {
+				while ((s[1] & 0xC0) == 0x80) s++; // the rest of the sequence
+				c = '?';
+			}
+			if (c >= 'a' && c <= 'z') c -= 32;
+			t[m++] = c > 0x5F ? '?' : c;
+		}
+		memset(t + m, 0, RA_TITLE - m);
+	}
+	unsigned tail[2] = {k, 0x4C544152}; // "RATL"
+	memcpy(out + k * (4 + RA_TITLE), tail, 8);
+	return k * (4 + RA_TITLE) + 8;
+}
+
 static int ra_prepare(int i, char *arg, int n)
 {
-	static unsigned char wl[RA_WATCH_MAX * 4 + 2048];
+	static unsigned char wl[RA_WATCH_MAX * 4 + 2048 + RA_TITLES * (4 + RA_TITLE) + 8];
 	char path[64], wlp[64];
-	int len = ra_watchlist(ini_get(&cfg, "logros", "servidor", ""), cv[i].hash, ra_id(i), wl, sizeof(wl));
+	int len = ra_watchlist(ini_get(&cfg, "logros", "servidor", ""), cv[i].hash, ra_id(i), wl, sizeof(wl) - RA_TITLES * (4 + RA_TITLE) - 8);
+	int wn = len > 0 ? ra_wl_check(wl, len) : 0;
+	if (wn > 0) len += ra_titles(i, wl + len);
 	snprintf(wlp, sizeof(wlp), "%s/%s.wl", RA_DIR, cv[i].serial);
 	FILE *f = len > 0 ? fopen(wlp, "wb") : NULL;
 	int ok = f && fwrite(wl, 1, len, f) == (size_t)len;
@@ -1184,8 +1220,8 @@ static int ra_prepare(int i, char *arg, int n)
 		              ra_srv_ip, ra_me) > 0;
 		ok &= fclose(f) == 0;
 	}
-	ra_log("ra: %s watch list %d bytes (%d entries), agent ip %s, client %s: %s", cv[i].serial, len,
-	       len > 0 ? ra_wl_check(wl, len) : 0, ra_me, ra_srv_ip, ok ? "on" : "off");
+	ra_log("ra: %s watch list %d bytes (%d entries, %d titles), agent ip %s, client %s: %s", cv[i].serial, len, wn,
+	       wn > 0 ? *(int *)(wl + len - 8) : 0, ra_me, ra_srv_ip, ok ? "on" : "off");
 	if (ok) snprintf(arg, n, "-ra=%s", wlp); // the list, not ra.toml (7f6d40f passed the toml: no telemetry in v1.1-v1.2.2)
 	return ok;
 }

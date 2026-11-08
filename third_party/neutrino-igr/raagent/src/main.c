@@ -40,6 +40,7 @@ static uint32_t srv_ip, mbox;
 static char me[16] = "0.0.0.0";
 static volatile int answered;
 static uint32_t rx, sent, torn;
+static volatile uint32_t note_n, note_id, note_pts; // phase 19: unlocks the client announced (RAU1)
 // one packet's worth, not RA_SNAP_MAX_BYTES: ~2.5 KB of IOP RAM instead of ~25 KB (Tekken 5 froze at scene loads)
 static uint8_t snap[RA_SNAP_TOTAL_FOR(AGENT_BYTES)] __attribute__((aligned(64))); // ee_core DMAs here
 static uint8_t stage[AGENT_BYTES];
@@ -55,17 +56,37 @@ static uint32_t parse_ip(const char *s)
     return ip << 8 | part;
 }
 
+static uint32_t num(const char **p)
+{
+    uint32_t v = 0;
+    while (**p == ' ')
+        (*p)++;
+    while (**p >= '0' && **p <= '9')
+        v = v * 10 + *(*p)++ - '0';
+    return v;
+}
+
 static int rx_handler(udp_socket_t *s, void *arg, const uint8_t *hdr, uint16_t hdr_len) // smap receive context
 {
-    uint32_t w[2];
-    (void)s, (void)arg, (void)hdr, (void)hdr_len;
+    uint32_t w[9];
+    char *t = (char *)w + 2;
+    (void)s, (void)arg;
     // the payload starts at 42 (ETH + IP + UDP), but the SMAP RX FIFO is read in 32-bit words: from 42 the console
-    // returned the bytes from 40 (PCSX2 honoured 42), so RAO1 never matched there. Read from 40, the tag at byte 2
-    smap_fifo_read(40, w, 8);
+    // returned the bytes from 40 (PCSX2 honoured 42), so RAO1 never matched there. Read from 40, the tag at byte 2.
+    // No further than the datagram (UDP length, frame bytes 38-39) and 32 bytes: "RAU1 <id> <points>" fits
+    int len = hdr_len >= 40 ? (hdr[38] << 8 | hdr[39]) - 8 : 4, n = len + 2 > 32 ? 32 : (len + 2 + 3) & ~3;
+    smap_fifo_read(40, w, n < 8 ? 8 : n);
+    t[len < 30 ? len : 30] = 0;
     rx++;
-    if (!strncmp((const char *)w + 2, "RAO1", 4))
+    if (!strncmp(t, "RAO1", 4))
         answered = 1;
-    return 0;
+    else if (!strncmp(t, "RAU1 ", 5)) { // repeats of one unlock: shown once
+        const char *p = t + 5;
+        uint32_t id = num(&p), pts = num(&p);
+        if (id != 0 && id != note_id)
+            note_id = id, note_pts = pts, note_n++;
+    }
+    return -1; // done with the frame: smap moves the RX FIFO read pointer past it
 }
 
 static void send_text(const char *t)
@@ -100,6 +121,21 @@ static void send_snapshot(const volatile struct ra_snap *s, uint32_t nb)
     sent++;
 }
 
+// the mailbox (ra_snap.h): the snapshot buffer's address, then the unlock notices (count, achievement id, points)
+static void mbox_write(void)
+{
+    static uint32_t word[4] __attribute__((aligned(16)));
+    SifDmaTransfer_t d;
+    int st;
+    if (mbox == 0)
+        return;
+    word[0] = (uint32_t)snap, word[1] = note_n, word[2] = note_id, word[3] = note_pts;
+    d.src = word, d.dest = (void *)mbox, d.size = 16, d.attr = 0;
+    CpuSuspendIntr(&st);
+    sceSifSetDma(&d, 1);
+    CpuResumeIntr(st);
+}
+
 static void agent_thread(void *arg)
 {
     const volatile struct ra_snap *s = (const volatile struct ra_snap *)snap;
@@ -107,17 +143,11 @@ static void agent_thread(void *arg)
     char t[64];
     (void)arg;
     udp_packet_init((udp_packet_t *)&pkt, srv_ip, CLIENT_PORT); // ARP for the client's MAC: a thread may wait
-    if (mbox != 0) { // tell ee_core where to DMA the snapshots
-        static uint32_t word[4] __attribute__((aligned(16)));
-        SifDmaTransfer_t d;
-        int st;
-        word[0] = (uint32_t)snap;
-        d.src = word, d.dest = (void *)mbox, d.size = 16, d.attr = 0;
-        CpuSuspendIntr(&st);
-        sceSifSetDma(&d, 1);
-        CpuResumeIntr(st);
-    }
+    uint32_t note_sent = 0;
+    mbox_write(); // tell ee_core where to DMA the snapshots
     for (;; DelayThread(4000), tick++) { // 4 ms: catches every 16.7 ms snapshot once (raudp's RA_POLL_US)
+        if (note_n != note_sent) // phase 19: an unlock for ee_core to show
+            note_sent = note_n, mbox_write();
         if (!answered) {
             if (tick % 250 == 0) // once a second until the client answers
                 sprintf(t, "RAP1 %s %d", me, AGENT_PORT), send_text(t);
@@ -126,7 +156,7 @@ static void agent_thread(void *arg)
         if (tick % 2500 == 0) // ten seconds
             // the badge fields (unused, PROTOCOL.md) carry the agent's view, logged by the client: the snapshot
             // sequence in its buffer, the buffer's magic, the EE mailbox (0 = the loader placed no watch block)
-            sprintf(t, "RAH1 %u %u %06u %08x %x", (unsigned)rx, 0u, (unsigned)(s->seq % 1000000), (unsigned)s->magic,
+            sprintf(t, "RAH1 %u %u %06u %08x %x", (unsigned)rx, (unsigned)note_n, (unsigned)(s->seq % 1000000), (unsigned)s->magic,
                     (unsigned)mbox), send_text(t);
         if (s->magic != RA_SNAP_MAGIC || s->seq == last)
             continue;

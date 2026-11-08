@@ -53,7 +53,34 @@ void GSM_GetDisplay(u64 out[6]); // gsm_api.c (patch_neutrino.py step 5)
 #define TEXT_X 28
 #define MARK_X 10
 #define ROW_Y(i) (3 + (i) * 17) // a glyph's 8th row is blank: the last row clears the border
-static u32 packet[(7 * 16 + BOX_W * STRIP * 4) / 4] __attribute__((aligned(64)));
+// phase 19: the achievement notice, two rows of 5x7 ASCII at 2x: "LOGRO DESBLOQUEADO  5 PTS" and the title
+#define NOTE_CHARS 31
+#define NOTE_W_MAX ((20 + NOTE_CHARS * 12 + 7) & ~7) // box_w is a multiple of 8: whole qwords at 2, 3, 4 bytes a pixel
+#define NOTE_TICKS (5u * 147456000u) // 2.5 s of EE clock
+static u32 packet[(7 * 16 + NOTE_W_MAX * STRIP * 4) / 4] __attribute__((aligned(64)));
+static u32 box_w, box_h, box_bp, box_bw, box_psm, box_x, box_y, box_bpc, box_done; // the box shown now
+static int notice;
+static char note_text[2][NOTE_CHARS + 1];
+
+// 5x7 ASCII 0x20-0x5f, one byte per column, bit 0 = top row (the launcher sends titles in upper case)
+static const u8 font[64][5] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00}, {0x00, 0x00, 0x5f, 0x00, 0x00}, {0x00, 0x07, 0x00, 0x07, 0x00}, {0x14, 0x7f, 0x14, 0x7f, 0x14}, //  !"#
+    {0x24, 0x2a, 0x7f, 0x2a, 0x12}, {0x23, 0x13, 0x08, 0x64, 0x62}, {0x36, 0x49, 0x56, 0x20, 0x50}, {0x00, 0x08, 0x07, 0x03, 0x00}, // $%&'
+    {0x00, 0x1c, 0x22, 0x41, 0x00}, {0x00, 0x41, 0x22, 0x1c, 0x00}, {0x2a, 0x1c, 0x7f, 0x1c, 0x2a}, {0x08, 0x08, 0x3e, 0x08, 0x08}, // ()*+
+    {0x00, 0x50, 0x30, 0x00, 0x00}, {0x08, 0x08, 0x08, 0x08, 0x08}, {0x00, 0x60, 0x60, 0x00, 0x00}, {0x20, 0x10, 0x08, 0x04, 0x02}, // ,-./
+    {0x3e, 0x51, 0x49, 0x45, 0x3e}, {0x00, 0x42, 0x7f, 0x40, 0x00}, {0x72, 0x49, 0x49, 0x49, 0x46}, {0x21, 0x41, 0x49, 0x4d, 0x33}, // 0123
+    {0x18, 0x14, 0x12, 0x7f, 0x10}, {0x27, 0x45, 0x45, 0x45, 0x39}, {0x3c, 0x4a, 0x49, 0x49, 0x31}, {0x41, 0x21, 0x11, 0x09, 0x07}, // 4567
+    {0x36, 0x49, 0x49, 0x49, 0x36}, {0x46, 0x49, 0x49, 0x29, 0x1e}, {0x00, 0x00, 0x14, 0x00, 0x00}, {0x00, 0x40, 0x34, 0x00, 0x00}, // 89:;
+    {0x00, 0x08, 0x14, 0x22, 0x41}, {0x14, 0x14, 0x14, 0x14, 0x14}, {0x00, 0x41, 0x22, 0x14, 0x08}, {0x02, 0x01, 0x59, 0x09, 0x06}, // <=>?
+    {0x3e, 0x41, 0x5d, 0x59, 0x4e}, {0x7c, 0x12, 0x11, 0x12, 0x7c}, {0x7f, 0x49, 0x49, 0x49, 0x36}, {0x3e, 0x41, 0x41, 0x41, 0x22}, // @ABC
+    {0x7f, 0x41, 0x41, 0x41, 0x3e}, {0x7f, 0x49, 0x49, 0x49, 0x41}, {0x7f, 0x09, 0x09, 0x09, 0x01}, {0x3e, 0x41, 0x41, 0x51, 0x73}, // DEFG
+    {0x7f, 0x08, 0x08, 0x08, 0x7f}, {0x00, 0x41, 0x7f, 0x41, 0x00}, {0x20, 0x40, 0x41, 0x3f, 0x01}, {0x7f, 0x08, 0x14, 0x22, 0x41}, // HIJK
+    {0x7f, 0x40, 0x40, 0x40, 0x40}, {0x7f, 0x02, 0x1c, 0x02, 0x7f}, {0x7f, 0x04, 0x08, 0x10, 0x7f}, {0x3e, 0x41, 0x41, 0x41, 0x3e}, // LMNO
+    {0x7f, 0x09, 0x09, 0x09, 0x06}, {0x3e, 0x41, 0x51, 0x21, 0x5e}, {0x7f, 0x09, 0x19, 0x29, 0x46}, {0x26, 0x49, 0x49, 0x49, 0x32}, // PQRS
+    {0x03, 0x01, 0x7f, 0x01, 0x03}, {0x3f, 0x40, 0x40, 0x40, 0x3f}, {0x1f, 0x20, 0x40, 0x20, 0x1f}, {0x3f, 0x40, 0x38, 0x40, 0x3f}, // TUVW
+    {0x63, 0x14, 0x08, 0x14, 0x63}, {0x03, 0x04, 0x78, 0x04, 0x03}, {0x61, 0x59, 0x49, 0x4d, 0x43}, {0x00, 0x7f, 0x41, 0x41, 0x41}, // XYZ[
+    {0x02, 0x04, 0x08, 0x10, 0x20}, {0x00, 0x41, 0x41, 0x41, 0x7f}, {0x04, 0x02, 0x01, 0x02, 0x04}, {0x40, 0x40, 0x40, 0x40, 0x40}, // bs]^_
+};
 
 // 5x7 glyphs in 6x8 cells (the 6th column and 8th row are the gaps), bit 7 = left column
 enum { G_A, G_C, G_E, G_G, G_I, G_L, G_N, G_P, G_R, G_MARK, G_S, G_T, G_O, G_W, G_F, G_SP, G_END = 0xff };
@@ -150,8 +177,32 @@ static int text_pixel(const u8 *s, u32 x, u32 y) // a string at 2x, (x, y) relat
     return 0;
 }
 
+static int ascii_pixel(const char *s, u32 x, u32 y) // as text_pixel, in ASCII
+{
+    if (y >= 16)
+        return 0;
+    for (; *s; s++, x -= 12)
+        if (x < 12) {
+            u32 c = (u8)*s - 32, cx = x / 2, cy = y / 2;
+            return c < 64 && cx < 5 && cy < 7 && (font[c][cx] >> cy & 1);
+        }
+    return 0;
+}
+
+static int notice_colour(u32 x, u32 y)
+{
+    if (x == 0 || y == 0 || x == box_w - 1 || y == box_h - 1)
+        return C_BORDER;
+    for (int i = 0; i < 2; i++)
+        if (x >= 10 && ascii_pixel(note_text[i], x - 10, y - ROW_Y(i)))
+            return i ? C_SEL : C_BORDER;
+    return C_PANEL;
+}
+
 static int menu_colour(u32 x, u32 y)
 {
+    if (notice)
+        return notice_colour(x, y);
     if (x == 0 || y == 0 || x == BOX_W - 1 || y == BOX_H - 1)
         return C_BORDER;
     for (int i = 0; i < M_ITEMS; i++) {
@@ -169,7 +220,7 @@ static int menu_colour(u32 x, u32 y)
 
 static void render_line(u8 *d, u32 y) // box line y into d
 {
-    for (u32 x = 0; x < BOX_W; x++, d += bpp) {
+    for (u32 x = 0; x < box_w; x++, d += bpp) {
         const u8 *c = rgb[menu_colour(x, y)];
         if (bpp == 2) {
             u32 p = c[0] >> 3 | (c[1] >> 3) << 5 | (c[2] >> 3) << 10 | 0x8000;
@@ -182,12 +233,13 @@ static void render_line(u8 *d, u32 y) // box line y into d
     }
 }
 
-static void vram_write(u32 bp, u32 bw, u32 psm, u32 x, u32 y)
+static void vram_write(void)
 {
     u32 chcr = *D1_CHCR;
-    u32 line = BOX_W * bpp, qw = line * STRIP / 16;
-    for (u32 y0 = 0; y0 < BOX_H; y0 += STRIP) {
-        u32 n = xfer_setup(packet, (u64)bp << 32 | (u64)bw << 48 | (u64)psm << 56, x, y + y0, BOX_W, STRIP, qw);
+    u32 line = box_w * bpp, qw = line * STRIP / 16;
+    for (u32 y0 = 0; y0 < box_h; y0 += STRIP) {
+        u32 n = xfer_setup(packet, (u64)box_bp << 32 | (u64)box_bw << 48 | (u64)box_psm << 56, box_x, box_y + y0,
+                           box_w, STRIP, qw);
         for (u32 l = 0; l < STRIP; l++)
             render_line((u8 *)(packet + n * 4) + l * line, y0 + l);
         vif1_send(packet, n + qw);
@@ -196,8 +248,13 @@ static void vram_write(u32 bp, u32 bw, u32 psm, u32 x, u32 y)
     asm volatile("sync.l");
 }
 
-// The game is paused by the caller. Returns MENU_CANCEL, MENU_REBOOT or MENU_OFF
-int Menu_Run(void)
+int Box_Drawable(void) // VBLANK handler: no transfer of the game's to the GS under way (its paths idle)
+{
+    return !(*D1_CHCR & CHCR_STR) && !(*D2_CHCR & CHCR_STR) && !(*VIF1_STAT & VIF_FQC) && !(*GIF_STAT & GIF_BUSY);
+}
+
+// box_w x box_h over the shown frame, centred (top: near its top). 0 when it cannot be drawn: resume at once
+static int box_open(int top)
 {
     u64 gs[6]; // DISPFB1, DISPFB2, PMODE, DISPLAY1, DISPLAY2, SMODE2
     GSM_GetDisplay(gs);
@@ -210,25 +267,49 @@ int Menu_Run(void)
     u32 psm = (fb >> 15) & 0x1f;
     bpp = psm == 0 ? 4 : psm == 1 ? 3 : (psm == 2 || psm == 10) ? 2 : 0;
     if (!fb || !bpp)
-        return MENU_CANCEL; // no DISPFB seen (GSM unhooked), or a format the menu cannot draw: resume at once
+        return 0; // no DISPFB seen (GSM unhooked), or a format the menu cannot draw
 
-    u32 bp = (fb & 0x1ff) * 32, bw = (fb >> 9) & 0x3f;
+    u32 bw = (fb >> 9) & 0x3f;
     u32 w = bw * 64, h = 224; // frame lines shown: DISPLAY height over its vertical magnification
     if (disp)
         h = (((u32)(disp >> 44) & 0x7ff) + 1) / (((u32)(disp >> 27) & 3) + 1); // u32: a u64 divide pulls 6 KB of libgcc
     if ((gs[5] & 3) == 3) // interlaced FRAME mode: the buffer holds one field, half the lines
         h /= 2;
-    u32 x = ((fb >> 32) & 0x7ff) + (w > BOX_W ? (w - BOX_W) / 2 : 0);
-    u32 y = ((fb >> 43) & 0x7ff) + (h > BOX_H ? (h - BOX_H) / 2 : 0);
+    if (w < box_w || h < box_h) // it would spill out of the frame
+        return 0;
+    box_bp = (fb & 0x1ff) * 32, box_bw = bw, box_psm = psm;
+    box_x = ((fb >> 32) & 0x7ff) + (w - box_w) / 2;
+    box_y = ((fb >> 43) & 0x7ff) + (top && h > box_h + 32 ? 16 : (h - box_h) / 2);
 
-    u32 bpc = _ee_disable_bpc(); // our own register accesses must not trap into GSM
+    box_bpc = _ee_disable_bpc(); // our own register accesses must not trap into GSM
     wait_clear(D1_CHCR, CHCR_STR);
     wait_clear(D2_CHCR, CHCR_STR);
     // the game's own transfers are over now; a channel 1 completion it has not handled yet stays for its handler
-    u32 game_done = *D_STAT & 2;
+    box_done = *D_STAT & 2;
+    return 1;
+}
+
+static void box_close(void)
+{
+    // DMA done is not the end: the VIF1 FIFO and the GIF may still be moving our image
+    wait_clear(VIF1_STAT, VIF_FQC);
+    wait_clear(GIF_STAT, GIF_BUSY);
+    // our VIF1 transfers flagged channel 1 done; left set, the game's VIF1 handler would run for a transfer it never
+    // started. Write 1 clears it (the mask bits stay)
+    if (!box_done)
+        *D_STAT = 2;
+    _ee_enable_bpc(box_bpc);
+}
+
+// The game is paused by the caller. Returns MENU_CANCEL, MENU_REBOOT or MENU_OFF
+int Menu_Run(void)
+{
+    box_w = BOX_W, box_h = BOX_H;
+    if (!box_open(0))
+        return MENU_CANCEL;
 
     sel = M_CANCEL;
-    vram_write(bp, bw, psm, x, y);
+    vram_write();
     u16 held = IGR_Buttons(), now; // the combo is still held: only new presses count
     u32 last = ticks();
     for (;;) {
@@ -243,7 +324,7 @@ int Menu_Run(void)
         }
         if (pressed & (PAD_UP | PAD_DOWN)) {
             sel = (sel + (pressed & PAD_UP ? M_ITEMS - 1 : 1)) % M_ITEMS;
-            vram_write(bp, bw, psm, x, y);
+            vram_write();
         } else if (pressed & (PAD_CIRCLE | PAD_START)) {
             sel = M_CANCEL;
             break;
@@ -252,14 +333,41 @@ int Menu_Run(void)
     }
     for (last = ticks(); IGR_Buttons() && ticks() - last < IDLE_TICKS;) // the game must not see the closing button
         ;
-
-    // DMA done is not the end: the VIF1 FIFO and the GIF may still be moving our image
-    wait_clear(VIF1_STAT, VIF_FQC);
-    wait_clear(GIF_STAT, GIF_BUSY);
-    // our VIF1 transfers flagged channel 1 done; left set, the game's VIF1 handler would run for a transfer it never
-    // started. Write 1 clears it (the mask bits stay)
-    if (!game_done)
-        *D_STAT = 2;
-    _ee_enable_bpc(bpc);
+    box_close();
     return sel == M_REBOOT ? MENU_REBOOT : sel == M_OFF ? MENU_OFF : MENU_CANCEL;
+}
+
+static u32 put(char *d, u32 n, const char *s) // s at d[n] (bounded by note_text's rows); the new length
+{
+    while (*s && n < NOTE_CHARS)
+        d[n++] = *s++;
+    d[n] = 0;
+    return n;
+}
+
+// phase 19: an unlock over the paused game for ~2.5 s, its title from the launcher's list (in module storage)
+void Notice_Run(u32 id, u32 points)
+{
+    char num[8], *q = num + sizeof(num);
+    *--q = 0;
+    do
+        *--q = '0' + points % 10;
+    while ((points /= 10) && q > num);
+    u32 n = put(note_text[0], 0, eec.IgrLang ? "ACHIEVEMENT UNLOCKED  " : "LOGRO DESBLOQUEADO  ");
+    n = put(note_text[0], put(note_text[0], n, q), " PTS");
+    u32 m = 0;
+    note_text[1][0] = 0;
+    for (u32 i = 0; i < eec.RaTitleCount; i++)
+        if (*(u32 *)(eec.RaTitles + i * EEC_RA_TITLE) == id)
+            m = put(note_text[1], 0, (const char *)eec.RaTitles + i * EEC_RA_TITLE + 4);
+    box_w = (20 + 12 * (n > m ? n : m) + 7) & ~7; // whole qwords per two lines at 2, 3 and 4 bytes a pixel
+    box_h = m ? 40 : 22;                         // two rows, or the first only
+    notice = 1;
+    if (box_open(1)) {
+        vram_write();
+        for (u32 t0 = ticks(); ticks() - t0 < NOTE_TICKS;)
+            ;
+        box_close();
+    }
+    notice = 0;
 }

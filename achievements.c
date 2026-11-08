@@ -129,7 +129,8 @@ int ra_parse_game(const char *json, int n, ra_ach *out, int max)
 {
 	const char *end = json + n, *p = json_key(json, end, "achievements"), *q;
 	int count = 0;
-	if (!p || *p != '[') return 0;
+	while (p && *p != '[') p = json_key(p, end, "achievements"); // the list, not a subset's "achievements":30
+	if (!p) return 0;
 	for (p++; p < end && *p != ']' && count < max;) {
 		if (*p != '{') { p++; continue; }
 		const char *o = p; // the object's end: the first '}' outside a string (the objects are flat)
@@ -141,6 +142,7 @@ int ra_parse_game(const char *json, int n, ra_ach *out, int max)
 		if ((q = json_key(o, p, "title")) && *q == '"') json_str(q + 1, p, a->title, sizeof(a->title));
 		if ((q = json_key(o, p, "description")) && *q == '"') json_str(q + 1, p, a->desc, sizeof(a->desc));
 		if ((q = json_key(o, p, "points"))) a->points = atoi(q);
+		if ((q = json_key(o, p, "id"))) a->id = atoi(q);
 		a->earned = (q = json_key(o, p, "earned")) && q[0] == '"' && q[1] != '"';
 		p++;
 	}
@@ -332,6 +334,8 @@ int main(int argc, char **argv)
 	assert(ach[0].earned && !ach[1].earned && ach[1].points == 25 && !strcmp(ach[1].title, "Two"));
 	assert(ra_parse_game(js, sizeof(js) - 1, ach, 1) == 1);          // capped
 	assert(!ra_parse_game("{\"achievements\":[]}", 19, ach, 4));     // empty set
+	const char *sub = "{\"subsets\":[{\"achievements\":30}],\"achievements\":[{\"id\":346622,\"title\":\"Raven\"}]}";
+	assert(ra_parse_game(sub, strlen(sub), ach, 4) == 1 && ach[0].id == 346622); // Tekken 5: a subset's count first
 	const char *game = getenv("RA_GAME"); // a saved /game?id= answer (`make test RA_GAME=<file>`)
 	if (game && *game) {
 		static char gj[1 << 20];

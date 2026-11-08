@@ -23,25 +23,31 @@ extern int isceSifDmaStat(int trid);
 #define RA_RAM_LOW  0x00080000
 #define RA_RAM_HIGH 0x02000000
 
-static u32 frames, seq, skip, fail, last_ticks;
+static u32 frames, seq, skip, fail, last_ticks, note_seen;
+u32 ra_note_id, ra_note_points;
 static int dma_id;
 
 static inline u32 ticks(void) { u32 t; asm volatile("mfc0 %0, $9" : "=r"(t)); return t; }
 
-void RA_OnVblank(void) // interrupt context: no waiting
+int RA_OnVblank(void) // interrupt context: no waiting
 {
     u32 now = ticks(), frame_ticks = now - last_ticks, iop;
     last_ticks = now;
     if (eec.RaMbox == NULL || ++frames <= RA_START_DELAY)
-        return;
-    iop = *(volatile u32 *)UNCACHED_SEG(eec.RaMbox);
+        return 0;
+    volatile u32 *mb = (volatile u32 *)UNCACHED_SEG(eec.RaMbox);
+    iop = mb[0];
     if (iop == 0) // the agent has not said where its buffer is
-        return;
+        return 0;
+    if (mb[1] != note_seen) { // phase 19: the client's RAU1, passed on by the agent
+        note_seen = mb[1], ra_note_id = mb[2], ra_note_points = mb[3];
+        return 1;
+    }
     // the last copy still runs, or the game's own SIF1 chain does (scene loads): skip, never wait. Joining the
     // game's chain from this handler froze Tekken 5 at scene loads (2026-11-07)
     if ((dma_id != 0 && isceSifDmaStat(dma_id) >= 0) || (*(volatile u32 *)0x1000C400 & 0x100)) { // D6_CHCR.STR (SIF1; 0x1000C000 is SIF0, always running)
         skip++;
-        return;
+        return 0;
     }
     u8 *buf = eec.RaMbox + 64;
     struct ra_snap *s = (struct ra_snap *)UNCACHED_SEG(buf);
@@ -78,4 +84,5 @@ void RA_OnVblank(void) // interrupt context: no waiting
     SifDmaTransfer_t t = {buf, (void *)iop, RA_SNAP_DMA_SIZE(bytes), 0};
     if ((dma_id = isceSifSetDma(&t, 1)) == 0)
         fail++;
+    return 0;
 }

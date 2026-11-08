@@ -15,7 +15,7 @@ enum { RA_SET = 2, RA_NOSET, RA_NOSERVER, RA_FAIL }; // ra_query results (0, 1: 
 int ra_query(const char *server, const char *hash, const char *serial, int *count, char *title, int tn);
 
 // a game's achievements as the client's page lists them (GET /game?id=<RA id>), for the launcher's Logros panel
-typedef struct { char title[64], desc[128]; short points; char earned; } ra_ach;
+typedef struct { char title[64], desc[128]; int id; short points; char earned; } ra_ach; // id: RetroAchievements'
 int ra_parse_game(const char *json, int n, ra_ach *out, int max); // achievements read (UTF-8 text), 0 if none
 int ra_game_id(const char *hash);                    // RetroAchievements' id for the hash (HTTPS), <= 0 if unknown
 int ra_game_list(int id, ra_ach *out, int max);      // from the client's page (port 18280); < 0 on error

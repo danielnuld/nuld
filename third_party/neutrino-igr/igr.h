@@ -22,6 +22,9 @@ int IGR_Enabled(void);
 u16 IGR_Buttons(void); // buttons held now (PAD_* bits), 0 while the pad is not stable
 enum { MENU_CANCEL, MENU_REBOOT, MENU_OFF };
 int Menu_Run(void);    // menu.c: runs over the paused game, returns the item chosen
-void RA_OnVblank(void); // ra.c (phase 16b): one telemetry snapshot, from the VBLANK handler
+void Notice_Run(u32 id, u32 points); // menu.c (phase 19): an achievement notice over the paused game, ~2.5 s
+int Box_Drawable(void); // menu.c: the GS is idle, an image can go in now (else wait for another VBLANK)
+int RA_OnVblank(void); // ra.c (phase 16b): one telemetry snapshot, from the VBLANK handler; 1 = a new unlock
+extern u32 ra_note_id, ra_note_points; // ra.c: the unlock RA_OnVblank reported
 
 #endif
