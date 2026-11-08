@@ -36,7 +36,7 @@
 #include "update.h"
 #include "splash.h"
 
-#define NULD_VERSION "v1.2.6" // tools/make_release.py checks it against the release tag
+#define NULD_VERSION "v1.2.7" // tools/make_release.py checks it against the release tag
 #include "lang.h"
 #include "achievements.h"
 #include "third_party/neutrino-igr/raagent/ra_watch.h"
@@ -191,9 +191,11 @@ static void *vmc_remote(int i, const char *what, int *size) // icon thread: GET 
 	snprintf(path, sizeof(path), "/vmc/%.*s/%s", (int)strlen(name) - 8, name + 4, what);
 	for (char *s = path; *s; s++)
 		if (*s == ' ') memmove(s + 3, s + 1, strlen(s)), memcpy(s, "%20", 3); // save names may hold spaces
-	if (buf && http_get(ini_get(&cfg, "juegos", "servidor", ""), 18290, path, buf, 256 << 10, &body, &len) == 200 &&
-	    (out = memalign(64, len + 1)))
-		memcpy(out, buf + body, len), out[len] = 0, *size = len;
+	FILE *lf = fopen(LOG_TXT, "a"); // before the request: a hang here shows as the last line (v1.2.6 froze once)
+	if (lf) fprintf(lf, "nuld vmc remote: %s (network %d)\n", path, net_res), fclose(lf);
+	int st = buf ? http_get(ini_get(&cfg, "juegos", "servidor", ""), 18290, path, buf, 256 << 10, &body, &len) : -1;
+	if (st == 200 && (out = memalign(64, len + 1))) memcpy(out, buf + body, len), out[len] = 0, *size = len;
+	if ((lf = fopen(LOG_TXT, "a"))) fprintf(lf, "nuld vmc remote: %s -> %d, %d bytes\n", path, st, out ? len : 0), fclose(lf);
 	free(buf);
 	return out;
 }
@@ -476,7 +478,7 @@ static int has_ext(const char *name, const char *ext)
 
 static void cover_files(const char *serial, void **big, void **small) // covers/<serial>.c16 + _s.c16, both or none
 {
-	char path[64];
+	char path[160];
 	*big = *small = NULL;
 	if (!*serial) return;
 	snprintf(path, sizeof(path), "%s/covers/%s.c16", homedev, serial);
@@ -504,7 +506,7 @@ static int save_c16(const char *serial, const char *suffix, const void *px, unsi
 
 static void *half_file(const char *serial, void **big, void **small) // _h.c16, made from the big one the first time
 {
-	char path[64];
+	char path[160];
 	snprintf(path, sizeof(path), "%s/covers/%s_h.c16", homedev, serial);
 	void *h = load_c16(path, COVER_HW, COVER_HH);
 	if (h) return h;
@@ -550,11 +552,12 @@ static void cover_thread(void *arg) // woken by draw_cover
 			if (!b) continue;
 			if (cover_seen[i] < frame_n - 2) { cover_req[i] = 0; continue; } // scrolled past: asked again if drawn
 			void *im[3] = {NULL, NULL, NULL};
-			char path[64];
-			if (b & 1) im[0] = half_file(cv[i].serial, &im[2], &im[1]);
-			snprintf(path, sizeof(path), "%s/covers/%s_s.c16", homedev, cv[i].serial);
+			char path[160];
+			const char *id = *cv[i].serial ? cv[i].serial : cv[i].title; // apps: covers/<title>.c16 (no serial)
+			if (b & 1) im[0] = half_file(id, &im[2], &im[1]);
+			snprintf(path, sizeof(path), "%s/covers/%s_s.c16", homedev, id);
 			if (b & 2 && !im[1]) im[1] = load_c16(path, SW, SH);
-			snprintf(path, sizeof(path), "%s/covers/%s.c16", homedev, cv[i].serial);
+			snprintf(path, sizeof(path), "%s/covers/%s.c16", homedev, id);
 			if (b & 4 && !im[2]) im[2] = load_c16(path, LW, LH);
 			cover_set(i, im, b);
 		}
@@ -1047,7 +1050,7 @@ static volatile int dl_state, dl_done, dl_total, dl_got; // state: 0 idle, 1 con
 
 static int save_c16(const char *serial, const char *suffix, const void *px, unsigned w, unsigned h)
 {
-	char path[64];
+	char path[160];
 	unsigned hdr[4] = {0, w, h, 0};
 	memcpy(hdr, "C16", 4);
 	snprintf(path, sizeof(path), "%s/covers/%s%s.c16", homedev, serial, suffix);
