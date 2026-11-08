@@ -33,6 +33,9 @@ edit("ee/ee_core/src/iopmgr.c",
      "    // ORBIT IGR: the game's code is in memory now, hook its libpad open call (as OPL syshook.c)\n"
      "    if (IGR_Enabled() && padOpen_hooked == 0)\n"
      "        padOpen_hooked = Install_PadOpen_Hook(0x00100000, 0x01ff0000, PADOPEN_HOOK);\n\n"
+     "    // ORBIT ra.c: the agent's IOP buffer dies with this reset; no snapshot DMA until the new agent writes it\n"
+     "    if (eec.RaMbox != NULL)\n"
+     "        *(volatile u32 *)(0x20000000 | (u32)eec.RaMbox) = 0;\n\n"
      "    New_Reset_Iop2(")
 edit("ee/ee_core/src/iopmgr.c",
      "//---------------------------------------------------------------------------\n// Replace SifSetDma, SifSetReg and SifGetReg syscalls in kernel\n",
