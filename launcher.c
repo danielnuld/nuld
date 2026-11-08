@@ -36,7 +36,7 @@
 #include "update.h"
 #include "splash.h"
 
-#define NULD_VERSION "v1.2.2" // tools/make_release.py checks it against the release tag
+#define NULD_VERSION "v1.2.3" // tools/make_release.py checks it against the release tag
 #include "lang.h"
 #include "achievements.h"
 #include "third_party/neutrino-igr/raagent/ra_watch.h"
@@ -1165,10 +1165,10 @@ static void ra_load_list(int i) // worker: game id from RetroAchievements (HTTPS
 static int ra_prepare(int i, char *arg, int n)
 {
 	static unsigned char wl[RA_WATCH_MAX * 4 + 2048];
-	char path[64];
+	char path[64], wlp[64];
 	int len = ra_watchlist(ini_get(&cfg, "logros", "servidor", ""), cv[i].hash, ra_id(i), wl, sizeof(wl));
-	snprintf(path, sizeof(path), "%s/%s.wl", RA_DIR, cv[i].serial);
-	FILE *f = len > 0 ? fopen(path, "wb") : NULL;
+	snprintf(wlp, sizeof(wlp), "%s/%s.wl", RA_DIR, cv[i].serial);
+	FILE *f = len > 0 ? fopen(wlp, "wb") : NULL;
 	int ok = f && fwrite(wl, 1, len, f) == (size_t)len;
 	if (f) ok &= fclose(f) == 0;
 	snprintf(path, sizeof(path), "%s/config/ra.toml", NDIR);
@@ -1186,7 +1186,7 @@ static int ra_prepare(int i, char *arg, int n)
 	}
 	ra_log("ra: %s watch list %d bytes (%d entries), agent ip %s, client %s: %s", cv[i].serial, len,
 	       len > 0 ? ra_wl_check(wl, len) : 0, ra_me, ra_srv_ip, ok ? "on" : "off");
-	if (ok) snprintf(arg, n, "-ra=%s", path);
+	if (ok) snprintf(arg, n, "-ra=%s", wlp); // the list, not ra.toml (7f6d40f passed the toml: no telemetry in v1.1-v1.2.2)
 	return ok;
 }
 

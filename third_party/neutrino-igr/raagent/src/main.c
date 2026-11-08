@@ -25,6 +25,7 @@ IRX_ID("raagent", 1, 0);
 #define CLIENT_PORT 18194
 #define AGENT_PORT  18195
 #define PAYLOAD     1472 // 1500 MTU - IP - UDP
+#define AGENT_BYTES (PAYLOAD - 256) // values in one packet (header under 256); the loader caps the list to it
 
 typedef struct {
     eth_header_t eth;
@@ -39,8 +40,9 @@ static uint32_t srv_ip, mbox;
 static char me[16] = "0.0.0.0";
 static volatile int answered;
 static uint32_t rx, sent, torn;
-static uint8_t snap[RA_SNAP_TOTAL] __attribute__((aligned(64))); // ee_core DMAs here
-static uint8_t stage[RA_SNAP_MAX_BYTES];
+// one packet's worth, not RA_SNAP_MAX_BYTES: ~2.5 KB of IOP RAM instead of ~25 KB (Tekken 5 froze at scene loads)
+static uint8_t snap[RA_SNAP_TOTAL_FOR(AGENT_BYTES)] __attribute__((aligned(64))); // ee_core DMAs here
+static uint8_t stage[AGENT_BYTES];
 
 static uint32_t parse_ip(const char *s)
 {
@@ -129,7 +131,7 @@ static void agent_thread(void *arg)
         if (s->magic != RA_SNAP_MAGIC || s->seq == last)
             continue;
         uint32_t sq = s->seq, nb = s->bytes;
-        if (nb > PAYLOAD - 256 || nb > RA_SNAP_MAX_BYTES) // one packet: the header is under 256 bytes
+        if (nb > AGENT_BYTES)
             continue;
         memcpy(stage, snap + RA_SNAP_HDR, nb);
         if (*(volatile uint32_t *)(snap + RA_SNAP_TRAILER_OFF(nb)) != sq || s->seq != sq) { // overwritten mid-copy

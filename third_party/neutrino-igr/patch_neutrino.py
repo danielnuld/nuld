@@ -219,7 +219,7 @@ static uint8_t *ra_place(const char *path, irxtab_t *tab, uint8_t *end)
     uint8_t *mbox;
     int k, d;
     if (ra_file == NULL || ra_file_len < (int)sizeof(*h) || h->magic != RA_WATCH_MAGIC || h->count == 0 ||
-        h->count > RA_WATCH_MAX || ra_file_len < (int)(sizeof(*h) + 4 * h->count) || h->bytes > RA_SNAP_MAX_BYTES) {
+        h->count > RA_WATCH_MAX || ra_file_len < (int)(sizeof(*h) + 4 * h->count) || h->bytes > 1472 - 256) { // raagent's buffer
         printf("ORBIT ra: %s is not a watch list: no telemetry\n", path);
         return end;
     }
