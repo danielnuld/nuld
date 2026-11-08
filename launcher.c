@@ -36,7 +36,7 @@
 #include "update.h"
 #include "splash.h"
 
-#define NULD_VERSION "v1.2.8" // tools/make_release.py checks it against the release tag
+#define NULD_VERSION "v1.2.9" // tools/make_release.py checks it against the release tag
 #include "lang.h"
 #include "achievements.h"
 #include "third_party/neutrino-igr/raagent/ra_watch.h"
@@ -410,6 +410,8 @@ static void install_stub(void)
 }
 
 static void wiz_job(void); // the setup wizard's memory card and config.ini work (#15), below
+static volatile int vmc_net_want = -1; // a server game's card for the loader thread (phase 20)
+static int vmc_net_ask(int i);         // asks for it; 0 if there is no loader thread to ask
 
 static u8 icon_stack[0x10000] __attribute__((aligned(16)));
 static void icon_thread(void *arg) // the only libmc user after the boot scan; woken by the render thread
@@ -427,6 +429,10 @@ static void icon_thread(void *arg) // the only libmc user after the boot scan; w
 		}
 		int i = icon_want, port;
 		if (i < 0) continue;
+		if (on_catalog(i) && uses_vmc(i)) { // on the server: the loader thread reads it, the network is its alone
+			if (!vmc_state[i] && !vmc_net_ask(i)) vmc_n[i] = 0, vmc_state[i] = 2; // no worker: no icon
+			continue;
+		}
 		if (uses_vmc(i) && !vmc_state[i]) vmc_state[i] = 1, vmc_load(i), vmc_state[i] = 2; // phase 14
 		if (gicon_state[i] || (uses_vmc(i) && vmc_state[i] != 2) || !newest_save(i, &port)) continue;
 		gicon_state[i] = 1;
@@ -1367,12 +1373,25 @@ static void loader(void *arg) // lower priority than the render thread: runs whi
 	while (ra_sema >= 0) { // achievements: woken by the render thread on a selection (phase 16)
 		if (!upd_left) WaitSema(ra_sema);
 		else if (PollSema(ra_sema) < 0) { upd_left = 0, update_check(); continue; } // nothing asked: check now
+		int v = vmc_net_want, port; // a server game's card and save icon (phase 20)
+		if (v >= 0 && !ra_launching) {
+			vmc_net_want = -1, ra_busy = 1, vmc_load(v), vmc_state[v] = 2;
+			if (newest_save(v, &port)) gicon_state[v] = 1, gicon[v] = load_icon(v), gicon_state[v] = 2;
+			ra_busy = 0;
+		}
 		int l = ra_list_want; // the Logros panel first: the user is looking at it
 		if (l >= 0 && !ra_abort && !ra_launching) ra_list_want = -1, ra_busy = 1, ra_load_list(l), ra_busy = 0;
 		int i = ra_want;
 		if (i >= 0 && !ra_state[i] && !ra_abort && !ra_launching) ra_busy = 1, ra_state[i] = 1, ra_state[i] = ra_game(i), ra_busy = 0;
 	}
 	ExitThread();
+}
+
+static int vmc_net_ask(int i) // the worker loop below runs only with achievements on
+{
+	if (ra_sema < 0) return 0;
+	vmc_state[i] = 1, vmc_net_want = i, SignalSema(ra_sema);
+	return 1;
 }
 
 static void text_c(const gfx_font *f, int y, const char *s, unsigned rgb) // centred on the screen
