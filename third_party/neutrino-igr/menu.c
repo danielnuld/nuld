@@ -90,6 +90,11 @@ static const u8 labels[2][M_ITEMS][10] = { // eec.IgrLang: the launcher's [ui] i
 static const u8 rgb[4][3] = {{12, 14, 18}, {200, 255, 46}, {138, 145, 156}, {230, 232, 236}};
 enum { C_PANEL, C_BORDER, C_ITEM, C_SEL };
 
+// no new press for this long: resume the game (an 8BitDo adapter is not read while paused, #11)
+#define IDLE_TICKS (10u * 294912000u) // COP0 Count runs at the EE clock: 10 s
+
+static inline u32 ticks(void) { u32 t; asm volatile("mfc0 %0, $9" : "=r"(t)); return t; }
+
 static int bpp; // bytes per pixel of the shown frame: 4 (CT32), 3 (CT24), 2 (CT16 / CT16S)
 static int sel;
 
@@ -225,10 +230,17 @@ int Menu_Run(void)
     sel = M_CANCEL;
     vram_write(bp, bw, psm, x, y);
     u16 held = IGR_Buttons(), now; // the combo is still held: only new presses count
+    u32 last = ticks();
     for (;;) {
         now = IGR_Buttons();
         u16 pressed = now & ~held;
+        if (now != held)
+            last = ticks();
         held = now;
+        if (ticks() - last > IDLE_TICKS) { // the pad says nothing (or is stuck): give the game back
+            sel = M_CANCEL;
+            break;
+        }
         if (pressed & (PAD_UP | PAD_DOWN)) {
             sel = (sel + (pressed & PAD_UP ? M_ITEMS - 1 : 1)) % M_ITEMS;
             vram_write(bp, bw, psm, x, y);
@@ -238,7 +250,7 @@ int Menu_Run(void)
         } else if (pressed & PAD_CROSS)
             break;
     }
-    while (IGR_Buttons()) // the game must not see the button that closed the menu
+    for (last = ticks(); IGR_Buttons() && ticks() - last < IDLE_TICKS;) // the game must not see the closing button
         ;
 
     // DMA done is not the end: the VIF1 FIFO and the GIF may still be moving our image
