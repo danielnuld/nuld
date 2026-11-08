@@ -36,7 +36,7 @@
 #include "update.h"
 #include "splash.h"
 
-#define NULD_VERSION "v1.2.9" // tools/make_release.py checks it against the release tag
+#define NULD_VERSION "v1.2.10" // tools/make_release.py checks it against the release tag
 #include "lang.h"
 #include "achievements.h"
 #include "third_party/neutrino-igr/raagent/ra_watch.h"
@@ -447,7 +447,6 @@ static void *load_c16(const char *path, unsigned w, unsigned h) // header check 
 	FILE *f = fopen(path, "rb");
 	unsigned hdr[4];
 	void *pix = NULL;
-	if (f) setvbuf(f, NULL, _IONBF, 0); // unbuffered: fread goes to the USB in one request, not 1 KB at a time
 	if (f && fread(hdr, 16, 1, f) == 1 && !memcmp(hdr, "C16", 4) && hdr[1] == w && hdr[2] == h) {
 		pix = memalign(64, w * h * 2);
 		if (pix && fread(pix, w * h * 2, 1, f) != 1) { free(pix); pix = NULL; }
@@ -1062,7 +1061,6 @@ static int save_c16(const char *serial, const char *suffix, const void *px, unsi
 	memcpy(hdr, "C16", 4);
 	snprintf(path, sizeof(path), "%s/covers/%s%s.c16", homedev, serial, suffix);
 	FILE *f = fopen(path, "wb");
-	if (f) setvbuf(f, NULL, _IONBF, 0); // as load_c16
 	int ok = f && fwrite(hdr, 16, 1, f) == 1 && fwrite(px, w * h * 2, 1, f) == 1;
 	if (f) ok &= fclose(f) == 0;
 	if (!ok) remove(path); // load_c16 would skip a short file anyway; keep the USB clean
