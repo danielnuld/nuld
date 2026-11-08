@@ -19,9 +19,13 @@ edit("common/include/eecore_config.h",
      "    uint16_t IgrMenuCombo; // phase 13: opens the in-game menu\n"
      "    // ORBIT phase 16b: achievements telemetry (ra.c), the watch block in module storage; RaMbox NULL = off\n"
      "    uint32_t *RaWatch;\n    uint32_t RaCount;\n    uint32_t RaBytes;\n    uint8_t *RaMbox;\n"
+     "    // NULD phase 19: titles for the unlock notice, EEC_RA_TITLE bytes each (u32 id, title + NUL)\n"
+     "    uint8_t *RaTitles;\n    uint32_t RaTitleCount;\n"
      "    // ORBIT phase 18: the in-game menu's language\n"
      "    uint8_t IgrLang; // 0 Spanish, 1 English\n"
-     "} __attribute__((packed, aligned(4)));")
+     "} __attribute__((packed, aligned(4)));\n\n"
+     "#define EEC_RA_TITLE 32 // NULD phase 19: one notice title in the watch list's tail\n"
+     "#define EEC_RA_TITLES_MAGIC 0x4C544152 // \"RATL\": the tail's last word, after its count")
 
 # 2. ee_core: build igr.c; hook libpad when the game asks for an IOP reset and right after its ELF is loaded
 edit("ee/ee_core/Makefile", "CHEATCORE_EE_OBJS = cheat_engine.o cheat_api.o",
@@ -33,6 +37,9 @@ edit("ee/ee_core/src/iopmgr.c",
      "    // ORBIT IGR: the game's code is in memory now, hook its libpad open call (as OPL syshook.c)\n"
      "    if (IGR_Enabled() && padOpen_hooked == 0)\n"
      "        padOpen_hooked = Install_PadOpen_Hook(0x00100000, 0x01ff0000, PADOPEN_HOOK);\n\n"
+     "    // ORBIT ra.c: the agent's IOP buffer dies with this reset; no snapshot DMA until the new agent writes it\n"
+     "    if (eec.RaMbox != NULL)\n"
+     "        *(volatile u32 *)(0x20000000 | (u32)eec.RaMbox) = 0;\n\n"
      "    New_Reset_Iop2(")
 edit("ee/ee_core/src/iopmgr.c",
      "//---------------------------------------------------------------------------\n// Replace SifSetDma, SifSetReg and SifGetReg syscalls in kernel\n",
@@ -198,7 +205,7 @@ static int ra_file_len;
 static void ra_read(const char *path)
 {
     int fd = open(path, O_RDONLY), n = fd < 0 ? -1 : lseek(fd, 0, SEEK_END);
-    if (n > 0 && n <= 16 + 4 * RA_WATCH_MAX + 8 + 8 * RA_NODE_MAX && (ra_file = malloc(n)) != NULL) {
+    if (n > 0 && n <= 16 + 4 * RA_WATCH_MAX + 8 + 8 * RA_NODE_MAX + 128 * EEC_RA_TITLE + 8 && (ra_file = malloc(n)) != NULL) {
         lseek(fd, 0, SEEK_SET);
         ra_file_len = read(fd, ra_file, n);
     }
@@ -216,7 +223,7 @@ static uint8_t *ra_place(const char *path, irxtab_t *tab, uint8_t *end)
     uint8_t *mbox;
     int k, d;
     if (ra_file == NULL || ra_file_len < (int)sizeof(*h) || h->magic != RA_WATCH_MAGIC || h->count == 0 ||
-        h->count > RA_WATCH_MAX || ra_file_len < (int)(sizeof(*h) + 4 * h->count) || h->bytes > RA_SNAP_MAX_BYTES) {
+        h->count > RA_WATCH_MAX || ra_file_len < (int)(sizeof(*h) + 4 * h->count) || h->bytes > 1472 - 256) { // raagent's buffer
         printf("ORBIT ra: %s is not a watch list: no telemetry\n", path);
         return end;
     }
@@ -247,8 +254,19 @@ static uint8_t *ra_place(const char *path, irxtab_t *tab, uint8_t *end)
     sys.eecore.RaCount = h->count;
     sys.eecore.RaBytes = h->bytes;
     sys.eecore.RaMbox  = mbox;
-    printf("ORBIT ra: %u entries (%u bytes) at %p, mailbox %p\n", (unsigned)h->count, (unsigned)h->bytes, list, mbox);
-    return mbox + 64 + RA_SNAP_TOTAL_FOR(h->bytes);
+    // NULD phase 19: the launcher's tail of notice titles, {count, "RATL"} last, copied after the snapshot buffer
+    uint8_t *t = mbox + 64 + RA_SNAP_TOTAL_FOR(h->bytes);
+    uint32_t *tail = (uint32_t *)(ra_file + ra_file_len - 8), nt = 0;
+    if (!(ra_file_len & 3) && tail[1] == EEC_RA_TITLES_MAGIC && tail[0] <= 128 &&
+        ra_file_len >= (int)(sizeof(*h) + 4 * h->count + 8 + EEC_RA_TITLE * tail[0])) {
+        nt = tail[0];
+        memcpy(t, (uint8_t *)tail - EEC_RA_TITLE * nt, EEC_RA_TITLE * nt);
+    }
+    sys.eecore.RaTitles = t;
+    sys.eecore.RaTitleCount = nt;
+    printf("ORBIT ra: %u entries (%u bytes) at %p, mailbox %p, %u titles\n", (unsigned)h->count, (unsigned)h->bytes,
+           list, mbox, (unsigned)nt);
+    return t + EEC_RA_TITLE * nt;
 }
 
 static int parse_cmdline_args(int argc, char *argv[], int *out_iELFArgcStart)

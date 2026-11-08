@@ -143,7 +143,8 @@ u16 IGR_Buttons(void)
 
 // ---- Pause for the in-game menu (phase 13): the game's threads stop and its interrupts are held, nothing is reset.
 // The SIF stays up (SBUS, DMA channels 5-7), so padman keeps filling the pad buffer the menu reads ----
-static volatile int menu_open;
+static volatile int menu_open; // 1 the menu, 2 an achievement notice
+static int box_want, box_wait; // phase 19: a menu (1) or notice (2) waiting for an idle GS, VBLANKs waited
 static int menu_rearmed = 1;
 static u32 paused_threads[8], intc_mask, dmac_mask; // what the pause took away, to give it back
 static const u8 dmac_held[] = {0, 1, 2, 3, 4, 8, 9}; // not SIF 5-7
@@ -263,7 +264,11 @@ static void IGR_Thread(void *arg)
         if (!menu_open)
             break;
         suspend_threads();
-        int item = Menu_Run();
+        int item = MENU_CANCEL;
+        if (menu_open == 2)
+            Notice_Run(ra_note_id, ra_note_points);
+        else
+            item = Menu_Run();
         if (item == MENU_OFF)
             power_off();
         if (item == MENU_REBOOT) { // as the reboot combo: the game stays paused, its interrupts held
@@ -361,12 +366,8 @@ static int IGR_Intc_Handler(int cause)
 
     if (pad.action == IGR_MENU) {
         pad.action = IGR_NONE;
-        if (!menu_open) {
-            menu_open = 1;
-            hold_interrupts(); // this handler's VBLANK too: the menu thread reads the pad itself
-            iChangeThreadPriority(IGR_Thread_ID, 0);
-            iWakeupThread(IGR_Thread_ID);
-        }
+        if (!menu_open && !box_want)
+            box_want = 1, box_wait = 0;
     }
 
     if (pad.action != IGR_NONE) {
@@ -382,8 +383,15 @@ static int IGR_Intc_Handler(int cause)
                 iSuspendThread(i);
         iChangeThreadPriority(IGR_Thread_ID, 0);
         iWakeupThread(IGR_Thread_ID);
-    } else
-        RA_OnVblank(); // phase 16b: achievements telemetry, one snapshot a frame
+    } else if (box_want) { // the menu or a notice, once the GS is idle (2 s at most: then anyway, as before)
+        if (Box_Drawable() || ++box_wait > 120) {
+            menu_open = box_want, box_want = 0;
+            hold_interrupts(); // this handler's VBLANK too: the menu thread reads the pad itself
+            iChangeThreadPriority(IGR_Thread_ID, 0);
+            iWakeupThread(IGR_Thread_ID);
+        }
+    } else if (RA_OnVblank() && !menu_open) // phase 16b: achievements telemetry, one snapshot a frame
+        box_want = 2, box_wait = 0;         // phase 19: an unlock to show
     ExitHandler();
     return 0;
 }

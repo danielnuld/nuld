@@ -36,7 +36,7 @@
 #include "update.h"
 #include "splash.h"
 
-#define NULD_VERSION "v1.2" // tools/make_release.py checks it against the release tag
+#define NULD_VERSION "v1.2.11" // tools/make_release.py checks it against the release tag
 #include "lang.h"
 #include "achievements.h"
 #include "third_party/neutrino-igr/raagent/ra_watch.h"
@@ -181,13 +181,51 @@ static void vmc_file(int i, char *out, int n) // the launcher's path to it
 static int udpfs_cat; // [juegos] servidor set: udpfs games come from its catalog (phase 17), else udpfs is mounted (#10)
 static int on_catalog(int i) { return src[(int)cv[i].src].type == SRC_UDPFS && udpfs_cat; }
 
+static int net_res;
+static ini cfg; // tentative: defined with the config below
+static void *vmc_remote(int i, const char *what, int *size) // icon thread: GET /vmc/<card>/<what> from the catalog
+{
+	char name[40], path[160], *buf = net_res == 0 ? malloc(256 << 10) : NULL, *out = NULL; // network up at boot
+	int body, len;
+	vmc_name(i, name, sizeof(name)); // "VMC/<serial>.bin"
+	snprintf(path, sizeof(path), "/vmc/%.*s/%s", (int)strlen(name) - 8, name + 4, what);
+	for (char *s = path; *s; s++)
+		if (*s == ' ') memmove(s + 3, s + 1, strlen(s)), memcpy(s, "%20", 3); // save names may hold spaces
+	FILE *lf = fopen(LOG_TXT, "a"); // before the request: a hang here shows as the last line (v1.2.6 froze once)
+	if (lf) fprintf(lf, "nuld vmc remote: %s (network %d)\n", path, net_res), fclose(lf);
+	int st = buf ? http_get(ini_get(&cfg, "juegos", "servidor", ""), 18290, path, buf, 256 << 10, &body, &len) : -1;
+	if (st == 200 && (out = memalign(64, len + 1))) memcpy(out, buf + body, len), out[len] = 0, *size = len;
+	if ((lf = fopen(LOG_TXT, "a"))) fprintf(lf, "nuld vmc remote: %s -> %d, %d bytes\n", path, st, out ? len : 0), fclose(lf);
+	free(buf);
+	return out;
+}
+
 static void vmc_load(int i) // icon thread
 {
 	static vmc_ent e[MAXDIR];
-	if (on_catalog(i)) { vdir[i] = NULL, vmc_n[i] = 0; return; } // on the server: not read (phase 17)
 	char path[64];
-	vmc_file(i, path, sizeof(path));
-	int n = vmc_list(path, e, MAXDIR);
+	int n = 0;
+	if (on_catalog(i)) { // on the server: its catalog lists the card (phase 20; phase 17 did not read it)
+		char *t = vmc_remote(i, "list", &n), *l = t, *nl;
+		for (n = 0; l && *l && n < MAXDIR; l = nl ? nl + 1 : l + strlen(l)) {
+			if ((nl = strchr(l, '\n'))) *nl = 0;
+			char *tab = strchr(l, '\t');
+			unsigned mode, b[8];
+			if (!tab || tab - l > 32 || sscanf(tab + 1, "%u\t%2x%2x%2x%2x%2x%2x%2x%2x", &mode, &b[0], &b[1], &b[2], &b[3],
+			                                   &b[4], &b[5], &b[6], &b[7]) != 9)
+				continue;
+			memset(&e[n], 0, sizeof(e[n]));
+			memcpy(e[n].name, l, tab - l);
+			e[n].mode = mode;
+			for (int k = 0; k < 8; k++) e[n].modified[k] = b[k];
+			n++;
+		}
+		free(t);
+		snprintf(path, sizeof(path), "server");
+	} else {
+		vmc_file(i, path, sizeof(path));
+		n = vmc_list(path, e, MAXDIR);
+	}
 	sceMcTblGetDir *d = n > 0 ? calloc(n, sizeof(sceMcTblGetDir)) : NULL;
 	for (int k = 0; d && k < n; k++) {
 		memcpy(d[k].EntryName, e[k].name, 32);
@@ -284,6 +322,7 @@ static void *save_read(int i, int port, const char *dir, const char *file, int *
 {
 	char path[128], card[64];
 	if (port < 2) return snprintf(path, sizeof(path), "/%s/%s", dir, file), mc_read(port, path, size);
+	if (on_catalog(i)) return snprintf(path, sizeof(path), "file/%s/%s", dir, file), vmc_remote(i, path, size);
 	vmc_file(i, card, sizeof(card));
 	snprintf(path, sizeof(path), "%s/%s", dir, file);
 	return vmc_read(card, path, size);
@@ -371,6 +410,8 @@ static void install_stub(void)
 }
 
 static void wiz_job(void); // the setup wizard's memory card and config.ini work (#15), below
+static volatile int vmc_net_want = -1; // a server game's card for the loader thread (phase 20)
+static int vmc_net_ask(int i);         // asks for it; 0 if there is no loader thread to ask
 
 static u8 icon_stack[0x10000] __attribute__((aligned(16)));
 static void icon_thread(void *arg) // the only libmc user after the boot scan; woken by the render thread
@@ -388,6 +429,10 @@ static void icon_thread(void *arg) // the only libmc user after the boot scan; w
 		}
 		int i = icon_want, port;
 		if (i < 0) continue;
+		if (on_catalog(i) && uses_vmc(i)) { // on the server: the loader thread reads it, the network is its alone
+			if (!vmc_state[i] && !vmc_net_ask(i)) vmc_n[i] = 0, vmc_state[i] = 2; // no worker: no icon
+			continue;
+		}
 		if (uses_vmc(i) && !vmc_state[i]) vmc_state[i] = 1, vmc_load(i), vmc_state[i] = 2; // phase 14
 		if (gicon_state[i] || (uses_vmc(i) && vmc_state[i] != 2) || !newest_save(i, &port)) continue;
 		gicon_state[i] = 1;
@@ -402,6 +447,7 @@ static void *load_c16(const char *path, unsigned w, unsigned h) // header check 
 	FILE *f = fopen(path, "rb");
 	unsigned hdr[4];
 	void *pix = NULL;
+	if (f) setvbuf(f, NULL, _IONBF, 0); // unbuffered: fread goes to the USB in one request, not 1 KB at a time
 	if (f && fread(hdr, 16, 1, f) == 1 && !memcmp(hdr, "C16", 4) && hdr[1] == w && hdr[2] == h) {
 		pix = memalign(64, w * h * 2);
 		if (pix && fread(pix, w * h * 2, 1, f) != 1) { free(pix); pix = NULL; }
@@ -439,7 +485,7 @@ static int has_ext(const char *name, const char *ext)
 
 static void cover_files(const char *serial, void **big, void **small) // covers/<serial>.c16 + _s.c16, both or none
 {
-	char path[64];
+	char path[160];
 	*big = *small = NULL;
 	if (!*serial) return;
 	snprintf(path, sizeof(path), "%s/covers/%s.c16", homedev, serial);
@@ -467,7 +513,7 @@ static int save_c16(const char *serial, const char *suffix, const void *px, unsi
 
 static void *half_file(const char *serial, void **big, void **small) // _h.c16, made from the big one the first time
 {
-	char path[64];
+	char path[160];
 	snprintf(path, sizeof(path), "%s/covers/%s_h.c16", homedev, serial);
 	void *h = load_c16(path, COVER_HW, COVER_HH);
 	if (h) return h;
@@ -513,11 +559,12 @@ static void cover_thread(void *arg) // woken by draw_cover
 			if (!b) continue;
 			if (cover_seen[i] < frame_n - 2) { cover_req[i] = 0; continue; } // scrolled past: asked again if drawn
 			void *im[3] = {NULL, NULL, NULL};
-			char path[64];
-			if (b & 1) im[0] = half_file(cv[i].serial, &im[2], &im[1]);
-			snprintf(path, sizeof(path), "%s/covers/%s_s.c16", homedev, cv[i].serial);
+			char path[160];
+			const char *id = *cv[i].serial ? cv[i].serial : cv[i].title; // apps: covers/<title>.c16 (no serial)
+			if (b & 1) im[0] = half_file(id, &im[2], &im[1]);
+			snprintf(path, sizeof(path), "%s/covers/%s_s.c16", homedev, id);
 			if (b & 2 && !im[1]) im[1] = load_c16(path, SW, SH);
-			snprintf(path, sizeof(path), "%s/covers/%s.c16", homedev, cv[i].serial);
+			snprintf(path, sizeof(path), "%s/covers/%s.c16", homedev, id);
 			if (b & 4 && !im[2]) im[2] = load_c16(path, LW, LH);
 			cover_set(i, im, b);
 		}
@@ -1010,18 +1057,19 @@ static volatile int dl_state, dl_done, dl_total, dl_got; // state: 0 idle, 1 con
 
 static int save_c16(const char *serial, const char *suffix, const void *px, unsigned w, unsigned h)
 {
-	char path[64];
+	char path[160];
 	unsigned hdr[4] = {0, w, h, 0};
 	memcpy(hdr, "C16", 4);
 	snprintf(path, sizeof(path), "%s/covers/%s%s.c16", homedev, serial, suffix);
 	FILE *f = fopen(path, "wb");
+	if (f) setvbuf(f, NULL, _IONBF, 0); // as load_c16
 	int ok = f && fwrite(hdr, 16, 1, f) == 1 && fwrite(px, w * h * 2, 1, f) == 1;
 	if (f) ok &= fclose(f) == 0;
 	if (!ok) remove(path); // load_c16 would skip a short file anyway; keep the USB clean
 	return ok;
 }
 
-static int net_res = 1; // net_ready's result, for the log; 1: not tried
+static int net_res = 1; // net_ready's result, for the log; 1: not tried (declared above vmc_remote)
 static int net_ready(void) // loader thread: the network up once, for the covers and the achievements; 0 or NET_ERR_*
 {
 	int r = net_res;
@@ -1162,13 +1210,49 @@ static void ra_load_list(int i) // worker: game id from RetroAchievements (HTTPS
 // phase 16b, at launch (render thread, worker stopped, network still up): the game's watch list to
 // mass0:/nuld/ra/<serial>.wl and Neutrino's extra config mass0:/neutrino/config/ra.toml, which loads smap,
 // ministack (no DHCP: the IP the launcher has now) and the agent into the game; arg gets "-ra=<list>". 0: none
+// phase 19: the titles of the achievements still to earn, for the in-game unlock notice: appended to the watch list
+// as RA_TITLES entries of {id, title}, then {count, "RATL"}; Neutrino's loader copies them next to the snapshot buffer
+#define RA_TITLES 128
+#define RA_TITLE 28 // with its NUL; ee_core's font has 0x20-0x5f only: upper case, accents dropped, the rest '?'
+static int ra_titles(int i, unsigned char *out)
+{
+	if (ra_list_for != i || ra_list_st != 2) ra_list_for = i, ra_load_list(i); // not opened on ○: ask now
+	int k = 0;
+	for (int a = 0; a < ra_list_n && k < RA_TITLES; a++) {
+		if (ra_list[a].earned || ra_list[a].id <= 0) continue;
+		unsigned char *e = out + k++ * (4 + RA_TITLE);
+		memcpy(e, &ra_list[a].id, 4);
+		char *t = (char *)e + 4;
+		int m = 0;
+		for (const unsigned char *s = (const unsigned char *)ra_list[a].title; *s && m < RA_TITLE - 1; s++) {
+			unsigned c = *s;
+			if (c == 0xC3 && s[1]) { // Latin-1 letters in UTF-8: the base letter
+				unsigned d = *++s | 0x20;
+				c = d >= 0xA0 && d <= 0xA5 ? 'A' : d >= 0xA8 && d <= 0xAB ? 'E' : d >= 0xAC && d <= 0xAF ? 'I'
+				  : d >= 0xB2 && d <= 0xB6 ? 'O' : d >= 0xB9 && d <= 0xBC ? 'U' : d == 0xB1 ? 'N' : '?';
+			} else if (c >= 0x80) {
+				while ((s[1] & 0xC0) == 0x80) s++; // the rest of the sequence
+				c = '?';
+			}
+			if (c >= 'a' && c <= 'z') c -= 32;
+			t[m++] = c > 0x5F ? '?' : c;
+		}
+		memset(t + m, 0, RA_TITLE - m);
+	}
+	unsigned tail[2] = {k, 0x4C544152}; // "RATL"
+	memcpy(out + k * (4 + RA_TITLE), tail, 8);
+	return k * (4 + RA_TITLE) + 8;
+}
+
 static int ra_prepare(int i, char *arg, int n)
 {
-	static unsigned char wl[RA_WATCH_MAX * 4 + 2048];
-	char path[64];
-	int len = ra_watchlist(ini_get(&cfg, "logros", "servidor", ""), cv[i].hash, ra_id(i), wl, sizeof(wl));
-	snprintf(path, sizeof(path), "%s/%s.wl", RA_DIR, cv[i].serial);
-	FILE *f = len > 0 ? fopen(path, "wb") : NULL;
+	static unsigned char wl[RA_WATCH_MAX * 4 + 2048 + RA_TITLES * (4 + RA_TITLE) + 8];
+	char path[64], wlp[64];
+	int len = ra_watchlist(ini_get(&cfg, "logros", "servidor", ""), cv[i].hash, ra_id(i), wl, sizeof(wl) - RA_TITLES * (4 + RA_TITLE) - 8);
+	int wn = len > 0 ? ra_wl_check(wl, len) : 0;
+	if (wn > 0) len += ra_titles(i, wl + len);
+	snprintf(wlp, sizeof(wlp), "%s/%s.wl", RA_DIR, cv[i].serial);
+	FILE *f = len > 0 ? fopen(wlp, "wb") : NULL;
 	int ok = f && fwrite(wl, 1, len, f) == (size_t)len;
 	if (f) ok &= fclose(f) == 0;
 	snprintf(path, sizeof(path), "%s/config/ra.toml", NDIR);
@@ -1184,9 +1268,9 @@ static int ra_prepare(int i, char *arg, int n)
 		              ra_srv_ip, ra_me) > 0;
 		ok &= fclose(f) == 0;
 	}
-	ra_log("ra: %s watch list %d bytes (%d entries), agent ip %s, client %s: %s", cv[i].serial, len,
-	       len > 0 ? ra_wl_check(wl, len) : 0, ra_me, ra_srv_ip, ok ? "on" : "off");
-	if (ok) snprintf(arg, n, "-ra=%s", path);
+	ra_log("ra: %s watch list %d bytes (%d entries, %d titles), agent ip %s, client %s: %s", cv[i].serial, len, wn,
+	       wn > 0 ? *(int *)(wl + len - 8) : 0, ra_me, ra_srv_ip, ok ? "on" : "off");
+	if (ok) snprintf(arg, n, "-ra=%s", wlp); // the list, not ra.toml (7f6d40f passed the toml: no telemetry in v1.1-v1.2.2)
 	return ok;
 }
 
@@ -1213,8 +1297,8 @@ static void update_check(void) // loader thread; the network is up for the cover
 		if (sig && upd_parse(t + body, &upd) && upd_newer(upd.version, NULD_VERSION)) upd_avail = 1;
 	}
 	FILE *lf = fopen(LOG_TXT, "a");
-	if (lf) fprintf(lf, "nuld update: %s %d, sig %d %s, latest %s, this %s%s\n", upd_base, st, ss, sig ? "ok" : "BAD",
-	                sig ? upd.version : "?", NULD_VERSION, upd_avail ? ": NEWER" : ""), fclose(lf);
+	if (lf) fprintf(lf, "nuld update: %s %d, sig %d %s, latest %s, this %s%s (%s)\n", upd_base, st, ss, sig ? "ok" : "BAD",
+	                sig ? upd.version : "?", NULD_VERSION, upd_avail ? ": NEWER" : "", net_why), fclose(lf);
 	free(t), free(g);
 }
 
@@ -1283,16 +1367,31 @@ static void loader(void *arg) // lower priority than the render thread: runs whi
 	                   .initial_priority = 0x40 };
 	if ((disc_tid = CreateThread(&dt)) >= 0) StartThread(disc_tid, NULL);
 	if (usb) download_covers(); // the home screen is already up: covers pop in as they arrive
-	if (usb) update_check();
+	int upd_left = usb; // the update check's HTTPS takes seconds: an achievements query waiting goes first
+	if (upd_left && ra_sema < 0) upd_left = 0, update_check();
 	if (ra_sema >= 0) ra_log("ra: worker up, covers state %d", dl_state);
 	while (ra_sema >= 0) { // achievements: woken by the render thread on a selection (phase 16)
-		WaitSema(ra_sema);
+		if (!upd_left) WaitSema(ra_sema);
+		else if (PollSema(ra_sema) < 0) { upd_left = 0, update_check(); continue; } // nothing asked: check now
+		int v = vmc_net_want, port; // a server game's card and save icon (phase 20)
+		if (v >= 0 && !ra_launching) {
+			vmc_net_want = -1, ra_busy = 1, vmc_load(v), vmc_state[v] = 2;
+			if (newest_save(v, &port)) gicon_state[v] = 1, gicon[v] = load_icon(v), gicon_state[v] = 2;
+			ra_busy = 0;
+		}
 		int l = ra_list_want; // the Logros panel first: the user is looking at it
 		if (l >= 0 && !ra_abort && !ra_launching) ra_list_want = -1, ra_busy = 1, ra_load_list(l), ra_busy = 0;
 		int i = ra_want;
 		if (i >= 0 && !ra_state[i] && !ra_abort && !ra_launching) ra_busy = 1, ra_state[i] = 1, ra_state[i] = ra_game(i), ra_busy = 0;
 	}
 	ExitThread();
+}
+
+static int vmc_net_ask(int i) // the worker loop below runs only with achievements on
+{
+	if (ra_sema < 0) return 0;
+	vmc_state[i] = 1, vmc_net_want = i, SignalSema(ra_sema);
+	return 1;
 }
 
 static void text_c(const gfx_font *f, int y, const char *s, unsigned rgb) // centred on the screen
