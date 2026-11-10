@@ -3,7 +3,8 @@
 # usage (from Windows): wsl bash /mnt/d/ps2/ps2-launcher/tools/build_neutrino.sh
 #
 # Rebuilt: the loader (neutrino.elf: -igr / -igroff / -igrexit / -igrmenu / -ra options), modules/ee_core.elf (In
-# Game Reset, in-game menu, achievements telemetry: third_party/neutrino-igr) and modules/raagent.irx (phase 16b).
+# Game Reset, in-game menu, achievements telemetry: third_party/neutrino-igr), modules/raagent.irx (phase 16b) and
+# modules/udpfs_fhi.irx (reconnects after a lost link).
 # Every other module stays the official dev release's, already on the USB.
 set -e
 export PS2DEV=/usr/local/ps2dev PS2SDK=/usr/local/ps2dev/ps2sdk GSKIT=/usr/local/ps2dev/gsKit
@@ -16,7 +17,7 @@ mkdir -p "$WORK"
 cd "$WORK"
 [ -d neutrino-dev ] || git clone -q https://github.com/rickgaiser/neutrino.git neutrino-dev
 cd neutrino-dev
-git checkout -q -- . && git checkout -q "$BASE" && git clean -qfd ee/ee_core ee/loader common iop/raagent
+git checkout -q -- . && git checkout -q "$BASE" && git clean -qfd ee/ee_core ee/loader common iop/raagent iop/udpfs
 rm -rf "$WORK/resetspu" && cp -r "$FORK/resetspu" "$WORK/resetspu" # the IGR's SPU2 reset, embedded in ee_core
 make -C "$WORK/resetspu" > "$WORK/resetspu.log" 2>&1 || { tail -20 "$WORK/resetspu.log"; exit 1; }
 bin2c "$WORK/resetspu/resetspu.irx" ee/ee_core/src/resetspu_irx.c resetspu_irx
@@ -33,8 +34,12 @@ grep -E ' _end$|_end = ' ee/ee_core/ee_core.map | head -2 # the 64 KB region end
 # the packed neutrino.elf needs ps2-packer's stubs, which this toolchain cannot find; the unpacked ELF runs the same
 make -C ee/loader neutrino_unpacked.elf > "$WORK/loader.log" 2>&1 || { tail -20 "$WORK/loader.log"; exit 1; }
 make -C iop/raagent > "$WORK/raagent.log" 2>&1 || { tail -20 "$WORK/raagent.log"; exit 1; }
+# the game stage's udpfs: it reconnects after a lost link (patch_neutrino.py step 6)
+# (--allow-zero-text: its exports.tab defines _retonly before the table, at .text 0, which this ps2sdk's iopfixup
+# refuses by default; the official build's older iopfixup took it as is)
+make -C iop/udpfs UDPFS_FHI=1 IOP_SRXFIXUP_FLAGS="--rb --irx1 --allow-zero-text" >"$WORK/udpfs.log" 2>&1 || { tail -20 "$WORK/udpfs.log"; exit 1; }
 mkdir -p "$REPO/dist/neutrino/modules"
 cp ee/loader/neutrino_unpacked.elf "$REPO/dist/neutrino/neutrino.elf"
-cp ee/ee_core/ee_core.elf iop/raagent/irx/raagent.irx "$REPO/dist/neutrino/modules/"
+cp ee/ee_core/ee_core.elf iop/raagent/irx/raagent.irx iop/udpfs/irx/udpfs_fhi.irx "$REPO/dist/neutrino/modules/"
 ls -la "$REPO/dist/neutrino" "$REPO/dist/neutrino/modules"
 echo "copy dist/neutrino/ over mass0:/neutrino/ (official dev $BASE release)"

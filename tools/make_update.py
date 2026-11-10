@@ -16,6 +16,7 @@ FILES = [  # asset, path on the USB, built file
     ("neutrino.elf", "neutrino/neutrino.elf", "dist/neutrino/neutrino.elf"),
     ("ee_core.elf", "neutrino/modules/ee_core.elf", "dist/neutrino/modules/ee_core.elf"),
     ("raagent.irx", "neutrino/modules/raagent.irx", "dist/neutrino/modules/raagent.irx"),
+    ("udpfs_fhi.irx", "neutrino/modules/udpfs_fhi.irx", "dist/neutrino/modules/udpfs_fhi.irx"),  # reconnects
 ]
 KEY_HOST, KEY = "nuld", "~/.orbit/update-key.pem"
 

@@ -289,4 +289,69 @@ edit(L, "    // Add simple checksum over the module data\n",
      "        irxptr_end = ra_place(ra_path, irxtable, irxptr_end);\n"
      "    sys.eecore.IgrLang = igr_lang; // ORBIT phase 18 (the menu's save buffer stays in ee_core: #12)\n\n"
      "    // Add simple checksum over the module data\n")
+
+# 6. udpfs: a lost link is found again. udprdma gives up after 4 x 500 ms without an ACK and stays disconnected for
+#    good, so every later read of the game fails (SMG port: "slice: bad blob" at the next scene, 2026-11-09). Now a
+#    read (and a write) first rediscovers the server, sequence numbers from 0 (udpfs_server.py resets on seq 0 and
+#    keeps its handles), and a failed block read is asked again over the new link.
+U = "iop/udpfs/src/"
+edit(U + "udprdma.c",
+     "int udprdma_is_connected(udprdma_socket_t *socket)\n",
+     "/* NULD: back to a new socket's state (as udprdma_create), for a discovery after a lost link */\n"
+     "void udprdma_reset(udprdma_socket_t *socket)\n"
+     "{\n"
+     "    if (socket == NULL) return;\n"
+     "    socket->state = STATE_DISCONNECTED;\n"
+     "    socket->tx_seq_nr = 0;\n"
+     "    socket->tx_seq_nr_acked = 0;\n"
+     "    socket->rx_seq_nr_expected = 0;\n"
+     "    socket->rx_window_count = 0;\n"
+     "    socket->rx_nack_sent = 0;\n"
+     "    socket->rx_buffer = NULL;\n"
+     "    socket->rx_hdr_buffer = NULL;\n"
+     "}\n\n"
+     "int udprdma_is_connected(udprdma_socket_t *socket)\n")
+edit(U + "udprdma.h",
+     "int udprdma_is_connected(udprdma_socket_t *socket);\n",
+     "int udprdma_is_connected(udprdma_socket_t *socket);\n\n"
+     "/* NULD: back to a new socket's state, for a discovery after a lost link */\n"
+     "void udprdma_reset(udprdma_socket_t *socket);\n")
+edit(U + "udpfs_core.c",
+     "/*\n * Core UDPFS initialization (socket + discovery)\n */\n",
+     "/*\n * NULD: the server found again after a lost link (as at init), for up to a minute\n */\n"
+     "static int _reconnect(void)\n"
+     "{\n"
+     "    int i;\n\n"
+     "    if (g_socket == NULL)\n"
+     "        return -1;\n"
+     "    for (i = 0; i < 30; i++) {\n"
+     "        udprdma_reset(g_socket);\n"
+     "        if (udprdma_discover(g_socket, 2000) == UDPRDMA_OK) {\n"
+     "            M_PRINTF(\"UDPFS: reconnected\\n\");\n"
+     "            return 0;\n"
+     "        }\n"
+     "    }\n"
+     "    M_PRINTF(\"UDPFS: server lost\\n\");\n"
+     "    return -1;\n"
+     "}\n\n"
+     "/*\n * Core UDPFS initialization (socket + discovery)\n */\n")
+edit(U + "udpfs_core.c",
+     "    if (!udprdma_is_connected(g_socket))\n        return -EIO;\n\n    if (handle < 0)\n        return -EBADF;\n\n"
+     "    while (sectors_left > 0) {\n",
+     "    if (!udprdma_is_connected(g_socket) && _reconnect() != 0) // NULD\n        return -EIO;\n\n"
+     "    if (handle < 0)\n        return -EBADF;\n\n"
+     "    while (sectors_left > 0) {\n")
+edit(U + "udpfs_core.c",
+     "        ret = _recv_with_result(g_socket, &req, sizeof(req), buffer, chunk * sector_size, 30000);\n",
+     "        ret = _recv_with_result(g_socket, &req, sizeof(req), buffer, chunk * sector_size, 30000);\n"
+     "        for (int tries = 0; ret < 0 && tries < 3 && _reconnect() == 0; tries++) // NULD: over the new link\n"
+     "            ret = _recv_with_result(g_socket, &req, sizeof(req), buffer, chunk * sector_size, 30000);\n")
+edit(U + "udpfs_core.c",
+     "    if (!udprdma_is_connected(g_socket))\n        return -EIO;\n\n    if (handle < 0)\n        return -EBADF;\n\n"
+     "    /* Build BWRITE_REQ */\n",
+     "    if (!udprdma_is_connected(g_socket) && _reconnect() != 0) // NULD\n        return -EIO;\n\n"
+     "    if (handle < 0)\n        return -EBADF;\n\n"
+     "    /* Build BWRITE_REQ */\n")
+# (fhi_read / fhi_write: no early return when disconnected, the core reconnects)
+edit(U + "udpfs_fhi.c", "    if (!udpfs_core_is_connected())\n        return 0;\n\n", "", count=2)
 print("patched")
