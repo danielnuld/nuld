@@ -37,7 +37,7 @@ Called ORBIT until v1.1. Upgrading keeps everything: the first boot moves `orbit
   achievements on your profile.
 - **Discs, PS1 and apps**: boots the disc in the drive, PS1 games through POPStarter, and homebrew from `APPS/`.
 - **Spanish or English** (`config.ini [ui] idioma`), including the in-game menu and the config file's comments.
-- Companion app: [ORBIT Jellyfin](https://github.com/danielnuld/orbit-jellyfin), your Jellyfin library on the PS2.
+- Companion app: [NULD Jellyfin](https://github.com/danielnuld/nuld-jellyfin), your Jellyfin library on the PS2.
 
 ## Quick start
 
