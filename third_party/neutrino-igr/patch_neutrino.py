@@ -18,7 +18,10 @@ edit("common/include/eecore_config.h",
      "    uint16_t IgrExitCombo;\n    uint16_t IgrOffCombo;\n    char IgrExitPath[64];\n"
      "    uint16_t IgrMenuCombo; // phase 13: opens the in-game menu\n"
      "    // ORBIT phase 16b: achievements telemetry (ra.c), the watch block in module storage; RaMbox NULL = off\n"
-     "    uint32_t *RaWatch;\n    uint32_t RaCount;\n    uint32_t RaBytes;\n    uint8_t *RaMbox;\n"
+     "    uint32_t *RaWatch;\n    uint32_t RaCount;\n    uint32_t RaBytes;\n"
+     "    // xeRAbora 2.1 RAN2/RANL chains are normalized in protected module storage.\n"
+     "    uint32_t *RaNodeList;\n    uint32_t RaNodeCount;\n    uint32_t *RaNodeWork;\n"
+     "    uint8_t *RaMbox;\n"
      "    // NULD phase 19: titles for the unlock notice, EEC_RA_TITLE bytes each (u32 id, title + NUL)\n"
      "    uint8_t *RaTitles;\n    uint32_t RaTitleCount;\n"
      "    // ORBIT phase 18: the in-game menu's language\n"
@@ -196,7 +199,7 @@ edit(L, '    printf("  -igrmenu=<mask>   ORBIT: libpad button mask that opens th
      '    printf("  -igrmenu=<mask>   ORBIT: libpad button mask that opens the in-game menu\\n");\n'
      '    printf("  -ra=<file>        ORBIT: RetroAchievements watch list for raagent.irx (phase 16b)\\n");\n'
      '    printf("  -igrlang=<es|en|pt>  ORBIT: language of the in-game menu (phase 18)\\n");\n')
-edit(L, "static int parse_cmdline_args(int argc, char *argv[], int *out_iELFArgcStart)\n", r'''#include "../../../common/include/ra_snap.h"
+edit(L, "static int parse_cmdline_args(int argc, char *argv[], int *out_iELFArgcStart)\n", r'''#include "../../../common/include/ra_wl_parse.h"
 // ORBIT phase 17: the watch list file is read while the boot environment's devices are still there (before the IOP
 // reboot into the load environment: without -qb, a nuld game, mass0: is gone by ra_place). Heap, not BSS: a 16 KB
 // static array in this loader broke every launch (phase 16b)
@@ -205,7 +208,7 @@ static int ra_file_len;
 static void ra_read(const char *path)
 {
     int fd = open(path, O_RDONLY), n = fd < 0 ? -1 : lseek(fd, 0, SEEK_END);
-    if (n > 0 && n <= 16 + 4 * RA_WATCH_MAX + 8 + 8 * RA_NODE_MAX + 128 * EEC_RA_TITLE + 8 && (ra_file = malloc(n)) != NULL) {
+    if (n > 0 && n <= NULD_RA_FILE_MAX && (ra_file = malloc(n)) != NULL) {
         lseek(fd, 0, SEEK_SET);
         ra_file_len = read(fd, ra_file, n);
     }
@@ -218,55 +221,102 @@ static void ra_read(const char *path)
 // the mailbox address into the agent's "mbox=00000000" argument. Returns the new end of module storage.
 static uint8_t *ra_place(const char *path, irxtab_t *tab, uint8_t *end)
 {
+    struct nuld_ra_list_info parsed;
     struct ra_watch_file *h = (struct ra_watch_file *)ra_file;
-    uint32_t i, sum = 0, *list = (uint32_t *)(((uint32_t)end + 15) & ~15);
-    uint8_t *mbox;
+    uint32_t i, j, *list, *work = NULL;
+    struct ra_node *nodes = NULL;
+    uint8_t *cursor, *mbox, *titles;
+    uint32_t limit;
     int k, d;
-    if (ra_file == NULL || ra_file_len < (int)sizeof(*h) || h->magic != RA_WATCH_MAGIC || h->count == 0 ||
-        h->count > RA_WATCH_MAX || ra_file_len < (int)(sizeof(*h) + 4 * h->count) || h->bytes > 1472 - 256) { // raagent's buffer
-        printf("ORBIT ra: %s is not a watch list: no telemetry\n", path);
+    if (!ra_file || !nuld_ra_parse_list(ra_file, ra_file_len, 1, &parsed)) {
+        printf("ORBIT ra: %s is not a complete watch list: no telemetry\n", path);
         return end;
     }
-    memcpy(list, ra_file + sizeof(*h), 4 * h->count);
-    for (i = 0; i < h->count; i++) {
-        uint32_t z = RA_WATCH_SIZE(list[i]);
-        if (z != 1 && z != 2 && z != 4)
-            break;
-        sum += z;
+    // All checks above happen BEFORE loading game memory. The old direct-only
+    // loader kept a possibly malformed tail and could truncate achievements.
+    list = (uint32_t *)(((uint32_t)end + 15) & ~15u);
+    cursor = (uint8_t *)(list + parsed.count);
+    if (parsed.node_count) {
+        nodes = (struct ra_node *)(((uint32_t)cursor + 15) & ~15u);
+        work = (uint32_t *)(nodes + parsed.node_count);
+        cursor = (uint8_t *)(work + parsed.node_count * 2u);
     }
-    if (i < h->count || sum != h->bytes) {
-        printf("ORBIT ra: %s has bad entries: no telemetry\n", path);
-        return end;
-    }
-    end  = (uint8_t *)(list + h->count);
     mbox = (uint8_t *)sys.eecore.ModStorageStart + EEC_MOD_CHECKSUM_COUNT * 4096;
-    if (end > mbox)
-        mbox = (uint8_t *)(((uint32_t)end + 63) & ~63);
-    memset(mbox, 0, 64 + RA_SNAP_TOTAL_FOR(h->bytes));
+    if (cursor > mbox)
+        mbox = (uint8_t *)(((uint32_t)cursor + 63) & ~63u);
+    titles = mbox + 64 + RA_SNAP_TOTAL_FOR(parsed.snapshot_bytes);
+    // EE module storage is below the 32 MiB end of physical RAM. Never
+    // overflow it with the 256-node working state, snapshot or RATL titles.
+    limit = (uint32_t)titles + parsed.title_count * EEC_RA_TITLE;
+    if (limit < (uint32_t)mbox || limit > 0x02000000u) {
+        printf("ORBIT ra: no EE storage for %u values + %u chains: no telemetry\n",
+               parsed.bytes, parsed.node_count);
+        return end;
+    }
+    memcpy(list, ra_file + sizeof(*h), 4 * parsed.count);
+    if (parsed.node_count) {
+        unsigned stride = parsed.node_magic == RA_NODE_MAGIC ? sizeof(struct ra_node) : 8;
+        for (i = 0; i < parsed.node_count; i++) {
+            struct ra_node node;
+            const uint8_t *at = ra_file + parsed.node_offset + i * stride;
+            node.scale = 1;
+            memcpy(&node, at, stride);
+            if (parsed.node_magic == RA_NODE_LEGACY_MAGIC)
+                node.w |= RA_NODE_LEGACY; // old RANL rejects a null base
+            nodes[i] = node;
+            work[i * 2] = 0; // resolved value, written in VBLANK
+            work[i * 2 + 1] = 0; // precomputed direct-parent offset/size
+            if (!RA_NODE_FROM_NODE(node.w)) {
+                unsigned parent = RA_NODE_PARENT(node.w);
+                uint32_t e = list[parent], addr = RA_WATCH_ADDR(e);
+                unsigned z = RA_WATCH_SIZE(e), off = 0;
+                if ((addr >= 0x00080000u && addr < 0x02000000u && z <= 0x02000000u - addr) ||
+                    (addr >= 0x02000000u && addr < 0x02004000u && z <= 0x02004000u - addr)) {
+                    for (j = 0; j < parent; j++)
+                        off += RA_WATCH_SIZE(list[j]);
+                    work[i * 2 + 1] = (off << 4) | z;
+                }
+            }
+        }
+    }
+    memset(mbox, 0, 64 + RA_SNAP_TOTAL_FOR(parsed.snapshot_bytes));
+    if (parsed.title_count)
+        memcpy(titles, ra_file + parsed.title_offset,
+               parsed.title_count * EEC_RA_TITLE);
+    // Tell the agent where to DMA, how large a complete snapshot is, and the
+    // image hash, if one was supplied in the RAH1 trailer.
     for (i = 0; i < (uint32_t)tab->count; i++) {
-        char *a = (char *)tab->modules[i].args;
-        for (k = 0; a != NULL && k + 13 <= (int)tab->modules[i].arg_len; k++)
-            if (!memcmp(a + k, "mbox=00000000", 13))
+        char *arg = (char *)tab->modules[i].args;
+        for (k = 0; arg && k < (int)tab->modules[i].arg_len; k++) {
+            if (k + 13 <= (int)tab->modules[i].arg_len &&
+                !memcmp(arg + k, "mbox=00000000", 13))
                 for (d = 0; d < 8; d++)
-                    a[k + 5 + d] = "0123456789abcdef"[((uint32_t)mbox >> (28 - 4 * d)) & 15];
+                    arg[k + 5 + d] = "0123456789abcdef"[((uint32_t)mbox >> (28 - 4 * d)) & 15];
+            if (k + 10 <= (int)tab->modules[i].arg_len &&
+                !memcmp(arg + k, "size=00000", 10)) {
+                unsigned value = parsed.snapshot_bytes;
+                for (d = 4; d >= 0; d--) {
+                    arg[k + 5 + d] = '0' + value % 10;
+                    value /= 10;
+                }
+            }
+            if (parsed.hash_offset && k + 37 <= (int)tab->modules[i].arg_len &&
+                !memcmp(arg + k, "hash=................................", 37))
+                memcpy(arg + k + 5, parsed.image_hash, RA_HASH_LEN);
+        }
     }
     sys.eecore.RaWatch = list;
-    sys.eecore.RaCount = h->count;
-    sys.eecore.RaBytes = h->bytes;
-    sys.eecore.RaMbox  = mbox;
-    // NULD phase 19: the launcher's tail of notice titles, {count, "RATL"} last, copied after the snapshot buffer
-    uint8_t *t = mbox + 64 + RA_SNAP_TOTAL_FOR(h->bytes);
-    uint32_t *tail = (uint32_t *)(ra_file + ra_file_len - 8), nt = 0;
-    if (!(ra_file_len & 3) && tail[1] == EEC_RA_TITLES_MAGIC && tail[0] <= 128 &&
-        ra_file_len >= (int)(sizeof(*h) + 4 * h->count + 8 + EEC_RA_TITLE * tail[0])) {
-        nt = tail[0];
-        memcpy(t, (uint8_t *)tail - EEC_RA_TITLE * nt, EEC_RA_TITLE * nt);
-    }
-    sys.eecore.RaTitles = t;
-    sys.eecore.RaTitleCount = nt;
-    printf("ORBIT ra: %u entries (%u bytes) at %p, mailbox %p, %u titles\n", (unsigned)h->count, (unsigned)h->bytes,
-           list, mbox, (unsigned)nt);
-    return t + EEC_RA_TITLE * nt;
+    sys.eecore.RaCount = parsed.count;
+    sys.eecore.RaBytes = parsed.bytes; // direct bytes; nodes add 8 each
+    sys.eecore.RaNodeList = (uint32_t *)nodes;
+    sys.eecore.RaNodeCount = parsed.node_count;
+    sys.eecore.RaNodeWork = work;
+    sys.eecore.RaMbox = mbox;
+    sys.eecore.RaTitles = titles;
+    sys.eecore.RaTitleCount = parsed.title_count;
+    printf("ORBIT ra: %u entries, %u chains, %u snapshot bytes, %u titles\n",
+           parsed.count, parsed.node_count, parsed.snapshot_bytes, parsed.title_count);
+    return titles + parsed.title_count * EEC_RA_TITLE;
 }
 
 static int parse_cmdline_args(int argc, char *argv[], int *out_iELFArgcStart)
@@ -275,9 +325,12 @@ edit(L, "    uint8_t *irxptr_end = build_irx_table(sDVDFile != NULL);\n",
      "    if (ra_path != NULL) // ORBIT phase 16b: room for the mailbox address in the agent's arguments\n"
      "        for (i = 0; i < drv.mod.count; i++)\n"
      "            if (drv.mod.mod[i].args != NULL && !strcmp(drv.mod.mod[i].sFileName, \"raagent.irx\") &&\n"
-     "                drv.mod.mod[i].arg_len + 14 <= 256) {\n"
-     "                strcpy(drv.mod.mod[i].args + drv.mod.mod[i].arg_len, \"mbox=00000000\");\n"
-     "                drv.mod.mod[i].arg_len += 14;\n"
+     "                drv.mod.mod[i].arg_len + 63 <= 256) {\n"
+     "                char *a = drv.mod.mod[i].args + drv.mod.mod[i].arg_len;\n"
+     "                strcpy(a, \"mbox=00000000\"); a += 14;\n"
+     "                strcpy(a, \"size=00000\"); a += 11;\n"
+     "                strcpy(a, \"hash=................................\");\n"
+     "                drv.mod.mod[i].arg_len += 63;\n"
      "            }\n"
      "    uint8_t *irxptr_end = build_irx_table(sDVDFile != NULL);\n")
 edit(L, "    mod_ee_core.sFileName = sys.eecore_elf;\n",

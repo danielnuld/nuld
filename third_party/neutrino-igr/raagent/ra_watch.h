@@ -1,5 +1,5 @@
-/* Copied unchanged from github.com/hacan359/xerabora protocol/ra_watch.h @d36ee3a (MIT, as the xeRAbora client):
-   the binary contract with the client, kept identical on both sides. */
+/* Adapted from hacan359/xerabora protocol/ra_watch.h (MIT):
+   xeRAbora 2.1 RAN2, legacy RANL and RAH1 wire records. */
 /*
   The watch list: the memory addresses the console-side agent reads every
   frame, and the size limits of the snapshot built from it. See
@@ -115,13 +115,14 @@ struct ra_watch_file
    so the client can tell from the first snapshot whether it is talking
    to a console that follows pointers. */
 
-#define RA_NODE_MAGIC 0x4C4E4152 /* "RANL" in little-endian */
+#define RA_NODE_LEGACY_MAGIC 0x4C4E4152 /* "RANL" */
+#define RA_NODE_MAGIC        0x324E4152 /* "RAN2" */
 
 /* Node ceiling. Nodes travel with the list into module storage, 16
    bytes each there (the node, then two scratch words per frame). The
    largest set counted so far has 57. The snapshot ceiling binds next,
    at 8 bytes per node. */
-#define RA_NODE_MAX 128
+#define RA_NODE_MAX 256
 
 /* Bytes one node adds to a snapshot: the resolved address and the value. */
 #define RA_NODE_PAIR_BYTES 8
@@ -132,21 +133,22 @@ struct ra_node_file
     unsigned int count; /* nodes that follow */
 };
 
-/* One node: parent + offset -> read size bytes.
+/* RAH1 file suffix: image hash (not the RAH1 UDP heartbeat). */
+#define RA_HASH_MAGIC 0x31484152 /* "RAH1" */
+#define RA_HASH_LEN 32
+struct ra_hash_file { unsigned int magic; char hash[RA_HASH_LEN]; };
 
-   parent is an index, into the entry list when from_node is 0 and into
-   the node list when it is 1. offset is added to the value read there;
-   it is the static part of the address and can be any 32-bit value. */
-struct ra_node
-{
-    unsigned int w;      /* parent index, from_node flag, read size */
-    unsigned int offset; /* added to the parent value */
-};
-
+/* RAN2 nodes store parent, offset, bit selection and multiplier; RANL
+   legacy nodes contain only the first two words, with implied scale=1. */
+struct ra_node { unsigned int w, offset, scale; };
 #define RA_NODE_PARENT(w)    ((w)&0x0FFF)
 #define RA_NODE_FROM_NODE(w) (((w) >> 12) & 1)
 #define RA_NODE_SIZE(w)      (((w) >> 13) & 7)
-#define RA_NODE_PACK(parent, from_node, size) \
-    (((unsigned int)(size) << 13) | ((unsigned int)(from_node) << 12) | ((parent)&0x0FFF))
+#define RA_NODE_SHIFT(w)     (((w) >> 16) & 31)
+#define RA_NODE_WIDTH(w)     (((w) >> 21) & 63)
+#define RA_NODE_LEGACY       (1u << 27)
+#define RA_NODE_PACK(parent, from_node, size, shift, width) \
+    (((unsigned int)(width) << 21) | ((unsigned int)(shift) << 16) | ((unsigned int)(size) << 13) | \
+     ((unsigned int)(from_node) << 12) | ((parent)&0x0FFF))
 
 #endif /* __RA_WATCH_H__ */

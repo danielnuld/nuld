@@ -58,8 +58,11 @@ Optional:
 - **MemCard PRO 2 / SD2PSX**: they switch to the game's own card when a game starts. To save there instead of the
   USB's virtual card, set the game's memory card to `fisica` (△, or `[memorycard] modo = fisica` for every game).
 - **Achievements**: run the xeRAbora client (signed in to your RetroAchievements account) on a PC or server on the
-  same network. Use [v0.1.0-alpha.9](https://github.com/hacan359/xerabora/releases/tag/v0.1.0-alpha.9), the version
-  NULD is tested with: xeRAbora is in active development and newer releases may change the protocol.
+  same network. [v0.1.0-alpha.9](https://github.com/hacan359/xerabora/releases/tag/v0.1.0-alpha.9) was tested on real
+  NULD hardware. This development branch adds [xeRAbora v2.1.0](https://github.com/hacan359/xerabora/releases/tag/v2.1.0)
+  compatibility for image-hash trailers, indexed and pointer-chain reads (up to 256 nodes), scratchpad access and
+  multipart snapshot transmission. **The new runtime paths are not yet validated on a PS2**. Do not treat passing
+  host protocol tests as proof that a tracked game will boot or unlock correctly.
 - **Home game server**: on a Linux box, run Neutrino's `udpfs_server.py` and NULD's `server/nuld_catalog.py`
   (zip, `server/`) over `<root>/DVD`; set `[juegos] origen = usb, udpfs` and `servidor = <server IP>`. Use a cable.
   Any other udpfs server (Server2PS2, ...): leave `servidor` empty and set a fixed `[red] ip`; no online covers or

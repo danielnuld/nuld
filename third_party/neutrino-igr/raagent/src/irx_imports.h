@@ -6,6 +6,7 @@
 #include <sifman.h>
 #include <stdio.h>
 #include <sysclib.h>
+#include <sysmem.h>
 #include <thbase.h>
 #include "smap.h"
 #include "mstack.h"

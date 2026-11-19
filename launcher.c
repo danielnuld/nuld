@@ -41,7 +41,7 @@
 #define NULD_VERSION "v1.3" // tools/make_release.py checks it against the release tag
 #include "lang.h"
 #include "achievements.h"
-#include "third_party/neutrino-igr/raagent/ra_watch.h"
+#include "third_party/neutrino-igr/raagent/ra_wl_parse.h"
 #include <sys/stat.h>
 #define NEWLIB_PORT_AWARE // fileXio for the 64-bit ISO seek only; the rest goes through stdio
 #include <fileXio_rpc.h>
@@ -1398,11 +1398,17 @@ static int ra_titles(int i, unsigned char *out)
 
 static int ra_prepare(int i, char *arg, int n)
 {
-	static unsigned char wl[RA_WATCH_MAX * 4 + 2048 + RA_TITLES * (4 + RA_TITLE) + 8];
+	static unsigned char wl[NULD_RA_FILE_MAX]; // 256 RAN2 nodes, RAH1, plus the separate RATL title table
+	struct nuld_ra_list_info info;
 	char path[64], wlp[64];
-	int len = ra_watchlist(ini_get(&cfg, "logros", "servidor", ""), cv[i].hash, ra_id(i), wl, sizeof(wl) - RA_TITLES * (4 + RA_TITLE) - 8);
-	int wn = len > 0 ? ra_wl_check(wl, len) : 0;
-	if (wn > 0) len += ra_titles(i, wl + len);
+	int len = ra_watchlist(ini_get(&cfg, "logros", "servidor", ""), cv[i].hash, ra_id(i), wl, NULD_RA_WIRE_MAX);
+	int wn = len > 0 && nuld_ra_parse_list(wl, len, 0, &info) ? (int)info.count : 0;
+	if (wn > 0 && info.hash_offset && strcasecmp(info.image_hash, cv[i].hash)) {
+		ra_log("ra: %s received a watch list for a different image: no telemetry", cv[i].serial);
+		return 0;
+	}
+	if (wn <= 0) return 0; // do not persist or launch with a malformed or partial list
+	len += ra_titles(i, wl + len);
 	snprintf(wlp, sizeof(wlp), "%s/%s.wl", RA_DIR, cv[i].serial);
 	FILE *f = len > 0 ? fopen(wlp, "wb") : NULL;
 	int ok = f && fwrite(wl, 1, len, f) == (size_t)len;

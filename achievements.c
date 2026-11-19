@@ -9,7 +9,7 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include "achievements.h"
-#include "third_party/neutrino-igr/raagent/ra_snap.h" // ra_watch.h too
+#include "third_party/neutrino-igr/raagent/ra_wl_parse.h"
 
 #ifdef SELFTEST
 #include <openssl/md5.h>
@@ -66,30 +66,13 @@ int ra_hash(iso_read_fn read_at, void *f, char *out, unsigned *exe_size)
 	return 1;
 }
 
-// the list arrives over the network and the fork reads it inside the game: header, every entry 1, 2 or 4 bytes adding
-// up to the header's total, and the optional chain tail exactly as long as it says (ra_watch.h)
+// Validate the COMPLETE list, including optional RAN2/RANL pointer-chain
+// data and xeRAbora 2.1's RAH1 image-hash suffix; malformed tails must not
+// silently leave only a direct-address subset of the achievements.
 int ra_wl_check(const unsigned char *b, int n)
 {
-	struct ra_watch_file h;
-	if (n < (int)sizeof(h)) return 0;
-	memcpy(&h, b, sizeof(h));
-	if (h.magic != RA_WATCH_MAGIC || h.version != RA_WATCH_VERSION || h.count == 0 || h.count > RA_WATCH_MAX ||
-	    n < (int)(sizeof(h) + 4 * h.count) || h.bytes > RA_SNAP_MAX_BYTES) return 0;
-	unsigned sum = 0, e;
-	for (unsigned i = 0; i < h.count; i++) {
-		memcpy(&e, b + sizeof(h) + 4 * i, 4);
-		unsigned s = RA_WATCH_SIZE(e);
-		if (s != 1 && s != 2 && s != 4) return 0;
-		sum += s;
-	}
-	int at = sizeof(h) + 4 * h.count;
-	if (sum != h.bytes) return 0;
-	if (n == at) return h.count;
-	struct ra_node_file t;
-	if (n < at + (int)sizeof(t)) return 0;
-	memcpy(&t, b + at, sizeof(t));
-	return t.magic == RA_NODE_MAGIC && t.count <= RA_NODE_MAX &&
-	       n == at + (int)(sizeof(t) + t.count * sizeof(struct ra_node)) ? (int)h.count : 0;
+    struct nuld_ra_list_info info;
+    return nuld_ra_parse_list(b, n, 0, &info) ? (int)info.count : 0;
 }
 
 // JSON string at p (after the opening quote) into out as UTF-8: \" \\ \/ \n \t \uXXXX (BMP); returns past the closing
@@ -317,7 +300,7 @@ int main(int argc, char **argv)
 	fclose(f);
 	// watch lists: header + entries (+ chain tail)
 	unsigned wl[16] = {RA_WATCH_MAGIC, RA_WATCH_VERSION, 3, 7, RA_WATCH_PACK(0x100000, 4), RA_WATCH_PACK(0x200001, 1),
-	                   RA_WATCH_PACK(0x300002, 2), RA_NODE_MAGIC, 1, RA_NODE_PACK(0, 0, 4), 0x10};
+	                   RA_WATCH_PACK(0x300002, 2), RA_NODE_LEGACY_MAGIC, 1, RA_NODE_PACK(0, 0, 4, 0, 0), 0x10};
 	assert(ra_wl_check((unsigned char *)wl, 28) == 3);           // entries only
 	assert(ra_wl_check((unsigned char *)wl, 44) == 3);           // with one node
 	assert(!ra_wl_check((unsigned char *)wl, 40) && !ra_wl_check((unsigned char *)wl, 27)); // cut short

@@ -1,0 +1,69 @@
+name: RA protocol host tests
+
+on:
+  push:
+    paths:
+      - achievements.c
+      - achievements.h
+      - launcher.c
+      - third_party/neutrino-igr/**
+      - tools/build_neutrino.sh
+      - tests/**
+      - .github/workflows/ra-protocol.yml
+  pull_request:
+    paths:
+      - achievements.c
+      - achievements.h
+      - launcher.c
+      - third_party/neutrino-igr/**
+      - tools/build_neutrino.sh
+      - tests/**
+      - .github/workflows/ra-protocol.yml
+  workflow_dispatch:
+
+jobs:
+  watch-list-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate the xeRAbora watch-list parser and trailer bounds
+        run: |
+          cc -std=c99 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer tests/test_ra_wire.c -o /tmp/nuld_ra_wire
+          /tmp/nuld_ra_wire
+      - name: Check launcher achievements regression tests
+        run: |
+          cc -std=gnu99 -Wall -Wno-deprecated-declarations -DSELFTEST achievements.c iso.c -DSELFTEST_LIB -lcrypto -o /tmp/nuld_achievements_test
+          /tmp/nuld_achievements_test
+      - name: Validate NULD's Neutrino patch script and build shell
+        run: |
+          python3 -m py_compile third_party/neutrino-igr/patch_neutrino.py
+          bash -n tools/build_neutrino.sh
+      - name: Fetch the pinned official Neutrino source
+        uses: actions/checkout@v4
+        with:
+          repository: ps2max32/neutrino
+          ref: 7be8de2798c99af433c91993e021746a54d6800d
+          path: neutrino-base
+          persist-credentials: false
+      - name: Apply the entire NULD patch to the pinned Neutrino source
+        working-directory: neutrino-base
+        run: python3 ../third_party/neutrino-igr/patch_neutrino.py
+
+  neutrino-cross-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile patched Neutrino EE and IOP modules with ps2dev
+        run: |
+          docker run --rm --volume "$GITHUB_WORKSPACE:/src" --workdir /src \
+            ghcr.io/ps2dev/ps2dev:v2.0.0 \
+            sh -c 'apk add --no-cache bash git make python3 && bash tools/build_neutrino.sh'
+      - name: Validate produced Neutrino payloads
+        run: |
+          test -s dist/neutrino/neutrino.elf
+          test -s dist/neutrino/modules/ee_core.elf
+          test -s dist/neutrino/modules/raagent.irx
+          test -s dist/neutrino/modules/udpfs_fhi.irx

@@ -41,13 +41,17 @@ test:
 	cc -std=gnu99 -Wall -DSELFTEST iso.c -o /tmp/iso_selftest && /tmp/iso_selftest
 	cc -std=gnu99 -Wall -DSELFTEST ini.c -o /tmp/ini_selftest && /tmp/ini_selftest
 	cc -std=gnu99 -Wall -DSELFTEST net.c -o /tmp/net_selftest && /tmp/net_selftest
-	cc -std=gnu99 -Wall -Wno-deprecated-declarations -DSELFTEST achievements.c iso.c -DSELFTEST_LIB -lcrypto -o /tmp/ra_selftest && RA_WL=$(RA_WL) RA_GAME=$(RA_GAME) /tmp/ra_selftest $(RA_CHECK) # RA_WL / RA_GAME: a real watch list / client /game answer
+	cc -std=gnu99 -Wall -Wno-deprecated-declarations -DSELFTEST achievements.c iso.c -DSELFTEST_LIB -lcrypto -o /tmp/ra_selftest && RA_WL=$(RA_WL) RA_GAME=$(RA_GAME) /tmp/ra_selftest $(RA_CHECK)
+	$(MAKE) test-ra-protocol # RA_WL / RA_GAME: a real watch list / client /game answer
 	cc -std=gnu99 -Wall -DSELFTEST vmc.c -o /tmp/vmc_selftest && /tmp/vmc_selftest $(VMC_CHECK)
 	cc -std=gnu99 -Wall -DSELFTEST update.c -o /tmp/update_selftest && /tmp/update_selftest
 	cc -std=gnu99 -Wall -DSELFTEST fmcb.c -o /tmp/fmcb_selftest && /tmp/fmcb_selftest
 	cc -std=gnu99 -Wall -DSELFTEST combo.c -o /tmp/combo_selftest && /tmp/combo_selftest
 	cc -std=gnu99 -Wall -DSELFTEST icon.c -lm -o /tmp/icon_selftest && /tmp/icon_selftest $(ICON_CHECK)
 	cc -std=gnu99 -Wall -DSELFTEST -Dmain=gfx_main -c gfx.c -o /tmp/gfx_host.o && cc -std=gnu99 -Wall -DSELFTEST cover.c /tmp/gfx_host.o font_data.c -ljpeg -lpng -lm -o /tmp/cover_selftest && /tmp/cover_selftest $(COVER_CHECK)
+
+test-ra-protocol:
+	cc -std=c99 -Wall -Wextra -Werror tests/test_ra_wire.c -o /tmp/nuld_ra_wire_test && /tmp/nuld_ra_wire_test
 
 nuld_hash: tools/nuld_hash.c achievements.c iso.c vmc.c # the game server's helper (phase 17), static: nuld has no compiler
 	cc -std=gnu99 -O2 -Wall -Wno-deprecated-declarations -DSELFTEST -DSELFTEST_LIB -DNULD_HASH -static $^ -lcrypto -lpthread -o $@

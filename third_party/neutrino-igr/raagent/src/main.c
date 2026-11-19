@@ -15,6 +15,7 @@
 #include <intrman.h>
 #include <sifman.h>
 #include <sysclib.h>
+#include <sysmem.h>
 #include <stdio.h>
 #include "smap.h"
 #include "ministack_udp.h"
@@ -25,7 +26,8 @@ IRX_ID("raagent", 1, 0);
 #define CLIENT_PORT 18194
 #define AGENT_PORT  18195
 #define PAYLOAD     1472 // 1500 MTU - IP - UDP
-#define AGENT_BYTES (PAYLOAD - 256) // values in one packet (header under 256); the loader caps the list to it
+#define AGENT_BYTES (PAYLOAD - 256) // compact static buffer for single-packet sets
+#define RA_TX_GAP_US 6000 // paced multipart packets, below SMAP's measured 215 packets/s
 
 typedef struct {
     eth_header_t eth;
@@ -36,14 +38,20 @@ typedef struct {
 
 static ra_pkt_t pkt;
 static udp_socket_t *sock;
-static uint32_t srv_ip, mbox;
+static uint32_t srv_ip, mbox, snap_capacity = AGENT_BYTES;
+static char image_hash[RA_HASH_LEN + 1];
 static char me[16] = "0.0.0.0";
 static volatile int answered;
 static uint32_t rx, sent, torn;
 static volatile uint32_t note_n, note_id, note_pts; // phase 19: unlocks the client announced (RAU1)
-// one packet's worth, not RA_SNAP_MAX_BYTES: ~2.5 KB of IOP RAM instead of ~25 KB (Tekken 5 froze at scene loads)
-static uint8_t snap[RA_SNAP_TOTAL_FOR(AGENT_BYTES)] __attribute__((aligned(64))); // ee_core DMAs here
-static uint8_t stage[AGENT_BYTES];
+// Ordinary one-packet launches retain the low-RAM footprint validated on
+// Tekken 5. Larger xeRAbora 2.1 sets allocate bigger buffers only when the
+// validated loader snapshot size demands them; allocation failure disarms
+// telemetry rather than starting with a dangerously undersized DMA target.
+static uint8_t small_snap[RA_SNAP_TOTAL_FOR(AGENT_BYTES)] __attribute__((aligned(64)));
+static uint8_t small_stage[AGENT_BYTES];
+static uint8_t *snap = small_snap, *stage = small_stage;
+static void *large_snap, *large_stage;
 
 static uint32_t parse_ip(const char *s)
 {
@@ -100,25 +108,38 @@ static void send_snapshot(const volatile struct ra_snap *s, uint32_t nb)
 {
     static uint32_t seq;
     char id[16];
+    uint32_t part, parts = (nb + RA_SNAP_CHUNK_BYTES - 1) / RA_SNAP_CHUNK_BYTES;
+    uint32_t snapshot_seq = seq++ % 1000000;
     int i, h;
-    for (i = 0; i < 15; i++) { // the serial padded with '~' (serials hold '_')
-        char c = i < 16 ? s->game_id[i] : 0;
+    if (parts == 0 || parts > RA_SNAP_PARTS) return;
+    for (i = 0; i < 15; i++) {
+        char c = s->game_id[i];
         id[i] = c >= 0x20 && c < 0x7f ? c : '~';
     }
     id[15] = 0;
-    h = sprintf((char *)pkt.payload,
-                "RA15 seq=%06u sz=%04u us=00000 mx=00000 rxq=000 fail=000000 err=+000 sk=000000 lk=0000 sq=%06u "
-                "ds=%06u bad=%04u n=%04u vb=%04u pt=0 np=1 rc=%07u fc=%07u id=%s ",
-                seq++ % 1000000, 0, s->seq % 1000000, s->dma_skip % 1000000, torn % 10000, s->count % 10000, nb,
-                s->read_cycles > 9999999 ? 9999999 : s->read_cycles,
-                s->frame_cycles > 9999999 ? 9999999 : s->frame_cycles, id);
-    // sz: the payload length, known once the header is written (same width, so the header does not move)
-    char sz[5];
-    sprintf(sz, "%04u", (unsigned)(h + nb) % 10000);
-    memcpy(pkt.payload + 19, sz, 4); // "RA15 seq=000000 sz=" is 19 characters
-    memcpy(pkt.payload + h, stage, nb);
-    udp_packet_send(sock, (udp_packet_t *)&pkt, h + nb);
-    sent++;
+    for (part = 0; part < parts; part++) {
+        uint32_t off = part * RA_SNAP_CHUNK_BYTES;
+        uint32_t len = nb - off;
+        if (len > RA_SNAP_CHUNK_BYTES) len = RA_SNAP_CHUNK_BYTES;
+        h = sprintf((char *)pkt.payload,
+                    "RA15 seq=%06u sz=%04u us=00000 mx=00000 rxq=000 fail=000000 err=+000 sk=000000 lk=0000 sq=%06u "
+                    "ds=%06u bad=%04u n=%04u vb=%04u pt=%u np=%u rc=%07u fc=%07u id=%s ",
+                    snapshot_seq, 0, s->seq % 1000000, s->dma_skip % 1000000,
+                    torn % 10000, s->count % 10000, len, part, parts,
+                    s->read_cycles > 9999999 ? 9999999 : s->read_cycles,
+                    s->frame_cycles > 9999999 ? 9999999 : s->frame_cycles, id);
+        if (h <= 0 || h > RA_SNAP_HEAD_BYTES || h + len > PAYLOAD) return;
+        // sz is fixed width and at byte 19 in the RA15 header.
+        char sz[5];
+        sprintf(sz, "%04u", (unsigned)(h + len));
+        memcpy(pkt.payload + 19, sz, 4);
+        memcpy(pkt.payload + h, stage + off, len);
+        udp_packet_send(sock, (udp_packet_t *)&pkt, h + len);
+        sent++;
+        // One-packet sets remain unchanged. Pace multipart sends instead
+        // of trying to enqueue all 9 parts in a single IOP timeslice.
+        if (part + 1 < parts) DelayThread(RA_TX_GAP_US);
+    }
 }
 
 // the mailbox (ra_snap.h): the snapshot buffer's address, then the unlock notices (count, achievement id, points)
@@ -139,32 +160,42 @@ static void mbox_write(void)
 static void agent_thread(void *arg)
 {
     const volatile struct ra_snap *s = (const volatile struct ra_snap *)snap;
-    uint32_t last = 0, tick = 0;
+    uint32_t last = 0, tick = 0, announce_period = ~0u;
     char t[64];
     (void)arg;
-    udp_packet_init((udp_packet_t *)&pkt, srv_ip, CLIENT_PORT); // ARP for the client's MAC: a thread may wait
+    udp_packet_init((udp_packet_t *)&pkt, srv_ip, CLIENT_PORT);
     uint32_t note_sent = 0;
-    mbox_write(); // tell ee_core where to DMA the snapshots
-    for (;; DelayThread(4000), tick++) { // 4 ms: catches every 16.7 ms snapshot once (raudp's RA_POLL_US)
-        if (note_n != note_sent) // phase 19: an unlock for ee_core to show
-            note_sent = note_n, mbox_write();
+    mbox_write(); // EE now knows the correctly sized DMA buffer
+    for (;; DelayThread(4000), tick++) {
+        if (note_n != note_sent)
+            note_sent = note_n, mbox_write(); // existing RAU1 notices
         if (!answered) {
-            if (tick % 250 == 0) // once a second until the client answers
+            if (tick % 250 == 0)
                 sprintf(t, "RAP1 %s %d", me, AGENT_PORT), send_text(t);
             continue;
         }
-        if (tick % 2500 == 0) // ten seconds
-            // the badge fields (unused, PROTOCOL.md) carry the agent's view, logged by the client: the snapshot
-            // sequence in its buffer, the buffer's magic, the EE mailbox (0 = the loader placed no watch block)
-            sprintf(t, "RAH1 %u %u %06u %08x %x", (unsigned)rx, (unsigned)note_n, (unsigned)(s->seq % 1000000), (unsigned)s->magic,
+        if (tick % 2500 == 0)
+            sprintf(t, "RAH1 %u %u %06u %08x %x", (unsigned)rx, (unsigned)note_n,
+                    (unsigned)(s->seq % 1000000), (unsigned)s->magic,
                     (unsigned)mbox), send_text(t);
+        // An image hash from RAH1 permits a second PC to identify a running
+        // game without having performed NULD's original support check.
+        if (image_hash[0] && s->magic == RA_SNAP_MAGIC &&
+            s->frames / 60 != announce_period) {
+            char serial[16];
+            memcpy(serial, (const void *)s->game_id, 15);
+            serial[15] = 0;
+            announce_period = s->frames / 60;
+            sprintf(t, "RAI1 %.15s %s", serial, image_hash);
+            send_text(t);
+        }
         if (s->magic != RA_SNAP_MAGIC || s->seq == last)
             continue;
         uint32_t sq = s->seq, nb = s->bytes;
-        if (nb > AGENT_BYTES)
+        if (nb == 0 || nb > snap_capacity || nb > RA_SNAP_MAX_BYTES)
             continue;
         memcpy(stage, snap + RA_SNAP_HDR, nb);
-        if (*(volatile uint32_t *)(snap + RA_SNAP_TRAILER_OFF(nb)) != sq || s->seq != sq) { // overwritten mid-copy
+        if (*(volatile uint32_t *)(snap + RA_SNAP_TRAILER_OFF(nb)) != sq || s->seq != sq) {
             torn++;
             continue;
         }
@@ -173,9 +204,21 @@ static void agent_thread(void *arg)
     }
 }
 
+static int valid_hash(const char *s)
+{
+    int i;
+    for (i = 0; i < RA_HASH_LEN; i++) {
+        char c = s[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) return 0;
+    }
+    return s[RA_HASH_LEN] == 0;
+}
+
 int _start(int argc, char *argv[])
 {
     iop_thread_t th;
+    uint32_t requested = AGENT_BYTES;
     int i;
     for (i = 1; i < argc; i++)
         if (!strncmp(argv[i], "srv=", 4))
@@ -184,7 +227,31 @@ int _start(int argc, char *argv[])
             strncpy(me, argv[i] + 3, sizeof(me) - 1);
         else if (!strncmp(argv[i], "mbox=", 5))
             mbox = strtoul(argv[i] + 5, NULL, 16);
-    printf("raagent: client %08x, me %s, mailbox %08x, buffer %p\n", (unsigned)srv_ip, me, (unsigned)mbox, snap);
+        else if (!strncmp(argv[i], "size=", 5))
+            requested = strtoul(argv[i] + 5, NULL, 10);
+        else if (!strncmp(argv[i], "hash=", 5) &&
+                 strlen(argv[i] + 5) == RA_HASH_LEN && valid_hash(argv[i] + 5))
+            memcpy(image_hash, argv[i] + 5, RA_HASH_LEN + 1);
+
+    if (!requested || requested > RA_SNAP_MAX_BYTES)
+        return MODULE_NO_RESIDENT_END;
+    if (requested > AGENT_BYTES) {
+        // Allocate only when needed. Existing one-packet sets keep the
+        // proven ~2.5 KiB IOP footprint; failed large allocations disarm RA.
+        large_snap = AllocSysMemory(ALLOC_FIRST, RA_SNAP_TOTAL_FOR(requested) + 63, NULL);
+        large_stage = AllocSysMemory(ALLOC_FIRST, requested, NULL);
+        if (!large_snap || !large_stage) {
+            if (large_snap) FreeSysMemory(large_snap);
+            if (large_stage) FreeSysMemory(large_stage);
+            return MODULE_NO_RESIDENT_END;
+        }
+        snap = (uint8_t *)(((uint32_t)large_snap + 63u) & ~63u);
+        stage = (uint8_t *)large_stage;
+        snap_capacity = requested;
+        memset(snap, 0, RA_SNAP_TOTAL_FOR(requested));
+    }
+    printf("raagent: client %08x, me %s, mailbox %08x, buffer %p, %u bytes\n",
+           (unsigned)srv_ip, me, (unsigned)mbox, snap, (unsigned)snap_capacity);
     if (srv_ip == 0 || (sock = udp_bind(AGENT_PORT, rx_handler, NULL)) == NULL)
         return MODULE_NO_RESIDENT_END;
     th.attr = TH_C;

@@ -23,7 +23,13 @@ sifman_IMPORTS_start
 I_sceSifSetDma
 sifman_IMPORTS_end
 
+sysmem_IMPORTS_start
+I_AllocSysMemory
+I_FreeSysMemory
+sysmem_IMPORTS_end
+
 sysclib_IMPORTS_start
+I_memset
 I_memcpy
 I_sprintf
 I_strlen
